@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sensors*"]
+
+[project]
+name = "sensors"
+version = "0.1.0"
+description = "Continuous code quality monitoring sensors for coding agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "aiofiles>=23.0.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",  # For better CLI output
+]
+
+[project.scripts]
+sensors = "sensors.cli:main"
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=7.0.0",
+    "black>=26.3.1",
+    "mypy>=1.0.0",
+    "ruff>=0.4.0",
+    "import-linter>=2.5.2",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM", "PLR0913", "PLR0917"]
+ignore = ["E501", "W291"]
+
+[tool.ruff.lint.pylint]
+max-args = 5
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

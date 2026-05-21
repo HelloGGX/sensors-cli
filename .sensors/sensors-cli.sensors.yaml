@@ -1,0 +1,40 @@
+version: 1
+prompt: "Follow scouting rule: if sensors are reporting issues you didn't cause with a change, consider to leave the code better than you found it, if it's a small change."
+
+runners:
+
+  - name: tests
+    parser: pytest
+    enabled: true
+    mode: interval
+    command: uv run pytest tests/ -v
+    interval: 10000
+
+  - name: cov
+    parser: pytest_cov
+    enabled: true
+    mode: interval
+    command: uv run pytest tests/ --cov=sensors --cov-report=term-missing
+    interval: 10000
+
+  - name: ruff
+    parser: ruff
+    enabled: true
+    mode: interval
+    command: uv run ruff check --output-format full sensors/
+    interval: 10000
+
+  - name: ruff-sec
+    parser: ruff
+    enabled: true
+    mode: interval
+    command: uv run ruff check --select S --output-format full sensors/
+    interval: 10000
+  
+  - name: imports
+    parser: import_linter
+    enabled: true
+    mode: interval
+    command: uv run lint-imports
+    interval: 26000
+    prompt: "For now, ignore any feedback from the import linter, as we're still evolving the rules"

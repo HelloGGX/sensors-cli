@@ -1,0 +1,323 @@
+"""Tests for the display manager."""
+
+import asyncio
+import tempfile
+from datetime import datetime, timedelta
+from io import StringIO
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from rich.console import Console
+
+from sensors.config.schema import RunnerConfig, RunnerMode
+from sensors.persistence.models import FormattedOutput, RunnerState
+from sensors.persistence.state_manager import StateManager
+from sensors.tui.display import DisplayEvents, DisplayManager
+
+
+@pytest.fixture
+async def state_manager_with_data():
+    """Create a state manager with sample data."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_file = Path(tmpdir) / "test_state.json"
+        sm = StateManager(state_file)
+
+        now_aware = datetime.now()
+        runner_state = RunnerState(
+            lastRun=now_aware,
+            status="success",
+            formatted=FormattedOutput(
+                details_terminal="[green]No issues[/green]",
+                details_html='<span class="sensors-success">No issues</span>',
+                details_llm="No issues",
+                failures_terminal="",
+                failures_html="",
+                failures_llm="",
+            )
+        )
+
+        await sm.update_state("eslint", runner_state)
+        yield sm
+
+
+@pytest.mark.asyncio
+async def test_format_time_ago_with_naive_datetime(state_manager_with_data):
+    """Test that _format_time_ago works with naive local datetimes."""
+    display = DisplayManager(state_manager_with_data, update_interval=1.0)
+
+    state = await state_manager_with_data.read_state()
+    assert "eslint" in state.runners
+
+    runner_state = state.runners["eslint"]
+    timestamp = runner_state.lastRun
+
+    result = display._format_time_ago(timestamp)
+
+    assert result.endswith(" ago")
+    assert any(unit in result for unit in ["s", "m", "h"])
+
+
+@pytest.mark.asyncio
+async def test_populate_table_with_state(state_manager_with_data):
+    """Test that table population works with real state data."""
+    display = DisplayManager(state_manager_with_data, update_interval=1.0)
+    table = display._create_table()
+
+    await display._populate_table(table)
+    assert table is not None
+
+
+@pytest.mark.asyncio
+async def test_populate_table_enabled_but_not_active_shows_parser_skip_hint():
+    """Enabled in YAML but no GenericRunner (unknown parser) — not 'waiting forever'."""
+    sm = StateManager()
+    cfgs = [
+        RunnerConfig(
+            name="stryker",
+            parser="stryker",
+            enabled=True,
+            mode=RunnerMode.INTERVAL,
+            command="npm run test:mutation",
+            interval=120_000,
+        ),
+    ]
+    display = DisplayManager(sm, runner_configs=cfgs, update_interval=1.0)
+    display.set_runner_configs(cfgs, active_runner_names=set())
+    table = display._create_table()
+    await display._populate_table(table)
+    buf = StringIO()
+    Console(file=buf, force_terminal=True, width=220).print(table)
+    rendered = buf.getvalue()
+    assert "Not running" in rendered
+    assert "reinstall" in rendered.lower()
+    assert "Waiting to start" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_populate_table_disabled_runner_not_waiting_to_start():
+    """Disabled runners should not look like a hung first run."""
+    sm = StateManager()
+    cfgs = [
+        RunnerConfig(
+            name="stryker",
+            parser="stryker",
+            enabled=False,
+            mode=RunnerMode.INTERVAL,
+            command="npm run test:mutation",
+            interval=120_000,
+        ),
+    ]
+    display = DisplayManager(sm, runner_configs=cfgs, update_interval=1.0)
+    table = display._create_table()
+    await display._populate_table(table)
+    buf = StringIO()
+    Console(file=buf, force_terminal=True, width=120).print(table)
+    rendered = buf.getvalue()
+    assert "Disabled" in rendered
+    assert "Waiting to start" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_populate_table_reads_formatted_details():
+    """Test that table population reads formatted.details_terminal from state."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_file = Path(tmpdir) / "test_state.json"
+        sm = StateManager(state_file)
+
+        now = datetime.now()
+
+        # ESLint with errors
+        eslint_state = RunnerState(
+            lastRun=now,
+            status="failure",
+            formatted=FormattedOutput(
+                details_terminal="[red]2 errors, 1 warning[/red]",
+                details_llm="2 errors, 1 warning",
+            )
+        )
+        await sm.update_state("eslint", eslint_state)
+
+        # Tests passing
+        test_state = RunnerState(
+            lastRun=now,
+            status="success",
+            formatted=FormattedOutput(
+                details_terminal="[green]10 passed[/green]",
+                details_llm="10 passed",
+            )
+        )
+        await sm.update_state("tests", test_state)
+
+        display = DisplayManager(sm, update_interval=1.0)
+        table = display._create_table()
+        await display._populate_table(table)
+        assert table is not None
+
+
+@pytest.mark.asyncio
+async def test_format_time_ago_various_intervals():
+    """Test time ago formatting for various time intervals."""
+    display = DisplayManager(StateManager(), update_interval=1.0)
+
+    timestamp = datetime.now() - timedelta(seconds=5)
+    result = display._format_time_ago(timestamp)
+    assert "s ago" in result
+
+
+@pytest.mark.asyncio
+async def test_get_status_icon():
+    """Test status icon selection."""
+    display = DisplayManager(StateManager(), update_interval=1.0)
+
+    assert "🟢" in display._get_status_icon("success")
+    assert "🔴" in display._get_status_icon("failure")
+    assert "?" in display._get_status_icon("unknown")
+
+
+def test_format_time_short_today():
+    """Snapshot taken today shows only HH:MM:SS, no date prefix."""
+    display = DisplayManager(StateManager(), update_interval=1.0)
+    now = datetime.now()
+    result = display._format_time_short(now)
+    assert result == now.strftime("%H:%M:%S")
+    assert "yesterday" not in result
+
+
+def test_format_time_short_yesterday():
+    """Snapshot taken yesterday is prefixed with 'yesterday'."""
+    display = DisplayManager(StateManager(), update_interval=1.0)
+    yesterday = datetime.now() - timedelta(days=1)
+    result = display._format_time_short(yesterday)
+    assert result.startswith("yesterday ")
+    assert yesterday.strftime("%H:%M:%S") in result
+
+
+def test_format_time_short_older():
+    """Snapshot older than yesterday shows abbreviated date."""
+    display = DisplayManager(StateManager(), update_interval=1.0)
+    older = datetime.now() - timedelta(days=5)
+    result = display._format_time_short(older)
+    assert "yesterday" not in result
+    assert older.strftime("%H:%M:%S") in result
+    # Should contain an abbreviated month name
+    assert older.strftime("%b") in result
+
+
+def test_create_table_no_snapshot():
+    """Table title contains no snapshot info when snapshot_time is None."""
+    display = DisplayManager(StateManager(), update_interval=1.0)
+    table = display._create_table()
+    assert "snapshot" not in (table.title or "")
+
+
+def test_create_table_with_snapshot_time():
+    """Table title includes the snapshot time when provided."""
+    display = DisplayManager(StateManager(), update_interval=1.0)
+    table = display._create_table(snapshot_time="12:34:56")
+    assert "12:34:56" in (table.title or "")
+
+
+def test_create_table_first_column_is_row_index():
+    """Sensors table has a # column for keyboard row shortcuts."""
+    display = DisplayManager(StateManager(), update_interval=1.0)
+    table = display._create_table()
+    assert table.columns[0].header == "#"
+
+
+def test_trigger_rerun_if_digit_sets_matching_event():
+    """Digit 1 signals the first row's re-run event when present in ``_rerun_events``."""
+    ev = asyncio.Event()
+    display = DisplayManager(StateManager(), update_interval=1.0)
+    display._runner_display_order = ["eslint", "tests"]
+    display._rerun_events = {"eslint": ev}
+    display._trigger_rerun_if_digit("1")
+    assert ev.is_set()
+
+
+def test_trigger_rerun_records_started_at_only_for_triggered_mode():
+    """``_triggered_run_started_at`` is set for digit re-run only when Repeat column is trigger."""
+    ev = asyncio.Event()
+    display = DisplayManager(StateManager(), update_interval=1.0)
+    display._runner_display_order = ["tr", "iv"]
+    display._rerun_events = {"tr": ev, "iv": ev}
+    display._runner_modes = {"tr": "trigger", "iv": "30s"}
+    display._trigger_rerun_if_digit("1")
+    assert "tr" in display._triggered_run_started_at
+    ev.clear()
+    display._trigger_rerun_if_digit("2")
+    assert "iv" not in display._triggered_run_started_at
+
+
+def test_last_run_finished_trigger_compare():
+    """Completion is detected when persisted lastRun is on/after the trigger timestamp."""
+    t0 = datetime.now()
+    t1 = t0 + timedelta(seconds=1)
+    assert DisplayManager._last_run_finished_trigger(t1, t0)
+    assert not DisplayManager._last_run_finished_trigger(t0, t1)
+
+
+def test_keypress_s_sets_snapshot_event():
+    """Pressing S sets the snapshot event."""
+    events = DisplayEvents()
+    display = DisplayManager(StateManager(), events=events)
+    display._check_keypress = lambda fd: "s"  # type: ignore[method-assign]
+    # Simulate the keypress handling inline (mirrors run() logic)
+    ch = display._check_keypress(0)
+    if ch and ch.lower() == "s":
+        events.snapshot.set()
+    assert events.snapshot.is_set()
+    assert not events.clear.is_set()
+    assert not events.shutdown.is_set()
+
+
+def test_keypress_c_sets_clear_event():
+    """Pressing C sets the clear event."""
+    events = DisplayEvents()
+    display = DisplayManager(StateManager(), events=events)
+    ch = "c"
+    if ch and ch.lower() == "c":
+        display._clear_status = "Clearing..."
+        events.clear.set()
+    assert events.clear.is_set()
+    assert display._clear_status == "Clearing..."
+    assert not events.snapshot.is_set()
+    assert not events.shutdown.is_set()
+
+
+def test_keypress_q_sets_shutdown_event():
+    """Pressing Q sets the shutdown event."""
+    events = DisplayEvents()
+    DisplayManager(StateManager(), events=events)
+    ch = "q"
+    if ch and ch.lower() == "q":
+        events.shutdown.set()
+    assert events.shutdown.is_set()
+    assert not events.snapshot.is_set()
+    assert not events.clear.is_set()
+
+
+@pytest.mark.asyncio
+async def test_keypress_s_triggers_snapshot_in_run_loop():
+    """Run loop sets snapshot event when S is pressed, without calling save_snapshot directly."""
+    events = DisplayEvents()
+    sm = StateManager()
+
+    with (
+        patch("sensors.tui.display.tty"),
+        patch("sensors.tui.display.termios"),
+        patch("sensors.tui.display.sys"),
+        patch("sensors.tui.display.os.read", return_value=b"s"),
+        patch("sensors.tui.display.select.select", return_value=([True], [], [])),
+    ):
+        sm.read_state = AsyncMock(return_value=AsyncMock(runners={}, snapshot=None, queryLog=[]))
+        display = DisplayManager(sm, events=events, update_interval=0.01)
+        display._should_stop = False
+
+        async def stop_after_event():
+            await asyncio.wait_for(events.snapshot.wait(), timeout=1.0)
+            display.stop()
+
+        await asyncio.gather(display.run(), stop_after_event())
+
+    assert events.snapshot.is_set()

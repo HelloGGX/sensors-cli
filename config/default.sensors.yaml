@@ -1,0 +1,49 @@
+version: 1
+runners:
+
+  - name: tests
+    parser: pytest
+    enabled: true
+    mode: interval
+    command: uv run pytest tests/ -v
+    interval: 10000
+
+  - name: cov
+    parser: pytest_cov
+    enabled: true
+    mode: interval
+    command: uv run pytest tests/ --cov=sensors --cov-report=term-missing
+    interval: 10000
+
+  - name: ruff
+    parser: ruff
+    enabled: true
+    mode: interval
+    command: uv run ruff check --output-format full sensors/
+    interval: 10000
+
+  - name: vitest-cov
+    parser: vitest_cov
+    enabled: true
+    mode: interval
+    command: npx vitest run --coverage
+    interval: 15000
+
+  - name: ruff-sec
+    parser: ruff
+    enabled: true
+    mode: interval
+    command: uv run ruff check --select S --output-format full sensors/
+    interval: 10000
+
+  - name: git-diff
+    parser: git_diff
+    enabled: true
+
+  # CSS: enable and set command/workingDir for your repo (example matches lintcss:sensor scripts).
+  - name: stylelint
+    parser: stylelint
+    enabled: false
+    mode: interval
+    command: npx stylelint --config .sensors/maintainability/stylelint.config.mjs --formatter json '**/*.css'
+    interval: 12000
