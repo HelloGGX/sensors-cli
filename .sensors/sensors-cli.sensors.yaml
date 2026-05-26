@@ -21,14 +21,14 @@ runners:
     parser: ruff
     enabled: true
     mode: interval
-    command: uv run ruff check --output-format full sensors/
+    command: python ./.sensors/maintainability/ruff_guidance.py -- check sensors/
     interval: 10000
 
   - name: ruff-sec
     parser: ruff
     enabled: true
     mode: interval
-    command: uv run ruff check --select S --output-format full sensors/
+    command: python ./.sensors/maintainability/ruff_guidance.py -- --select S check sensors/
     interval: 10000
   
   - name: imports

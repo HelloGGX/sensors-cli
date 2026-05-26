@@ -48,11 +48,30 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W", "UP", "B", "SIM", "PLR0913", "PLR0917"]
-ignore = ["E501", "W291"]
+select = [
+    "E",        # pycodestyle errors (indentation, spacing, etc.)
+    "F",        # Pyflakes (unused imports, undefined names, redefinitions)
+    "I",        # isort (import order and grouping)
+    "W",        # pycodestyle warnings (style nits; see ignore list)
+    "UP",       # pyupgrade (use modern Python syntax and builtins)
+    "B",        # flake8-bugbear (likely bugs and questionable patterns)
+    "SIM",      # flake8-simplify (redundant code that can be simplified)
+    "C901",     # McCabe complexity (too many branches/paths in one function)
+    "PLR0913",  # too many function/method parameters
+    "PLR0915",  # too many statements in one function/method body
+    "PLR0917",  # too many positional-only parameters
+]
+ignore = [
+    "E501",  # line too long (Black/format handles line length)
+    "W291",  # trailing whitespace
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10  # threshold for C901 (default is 10)
 
 [tool.ruff.lint.pylint]
-max-args = 5
+max-args = 5         # threshold for PLR0913 (default is 5)
+max-statements = 50  # threshold for PLR0915 (default is 50)
 
 [tool.mypy]
 python_version = "3.9"

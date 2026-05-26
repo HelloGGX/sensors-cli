@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from datetime import datetime
 
@@ -6,7 +7,7 @@ import pytest
 
 from sensors.persistence.models import RunnerResult
 from sensors.runners.generic import GenericRunner
-from sensors.runners.parsers.ruff import RuffParser
+from sensors.runners.parsers.ruff import GUIDANCE_JSON_KEY, RuffParser
 
 RUFF_FAILURE_OUTPUT = """\
 B904 Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
@@ -425,3 +426,124 @@ async def test_integration_ruff_full_pipeline(tmp_path):
     assert "no details" not in failures_llm, (
         f"format_failures_llm returned '(no details)' despite {len(violations)} violations"
     )
+
+
+RUFF_JSON_WITH_GUIDANCE = [
+    {
+        "cell": None,
+        "code": "C901",
+        "end_location": {"column": 4, "row": 10},
+        "filename": "pkg/mod.py",
+        "fix": None,
+        "location": {"column": 1, "row": 10},
+        "message": "`foo` is too complex (12 > 10)",
+        "noqa_row": 10,
+        "severity": "error",
+        "url": "https://docs.astral.sh/ruff/rules/complex-structure",
+    },
+    {
+        GUIDANCE_JSON_KEY: {
+            "triggered": ["C901"],
+            "rules": {
+                "C901": {
+                    "short": "Function control flow is too complex",
+                    "guidance": "About C901:\nPrefer extracting helpers.",
+                },
+            },
+        },
+    },
+]
+
+
+@pytest.mark.asyncio
+async def test_parse_output_json_with_guidance():
+    parser = RuffParser()
+    result = await parser.parse_output(json.dumps(RUFF_JSON_WITH_GUIDANCE))
+
+    assert result.success is False
+    assert result.output["errorCount"] == 1
+    assert len(result.output["violations"]) == 1
+    v = result.output["violations"][0]
+    assert v["rule"] == "C901"
+    assert v["file"] == "pkg/mod.py"
+    assert v["line"] == 10
+    assert v["column"] == 1
+
+    block = result.output["ruleGuidance"]
+    assert block["triggered"] == ["C901"]
+    assert "Prefer extracting helpers." in block["rules"]["C901"]["guidance"]
+
+
+def test_format_failures_terminal_includes_guidance_at_end():
+    parser = RuffParser()
+    result = RunnerResult(
+        timestamp=datetime.utcnow(),
+        success=False,
+        output={
+            "errorCount": 1,
+            "violations": [{
+                "rule": "C901",
+                "message": "too complex",
+                "file": "pkg/mod.py",
+                "line": 10,
+                "column": 1,
+            }],
+            "ruleGuidance": RUFF_JSON_WITH_GUIDANCE[1][GUIDANCE_JSON_KEY],
+        },
+    )
+    text = parser.format_failures_terminal(result)
+    assert "pkg/mod.py:10:1" in text
+    assert "Rule guidance:" in text
+    assert "About C901:" in text
+    assert text.index("pkg/mod.py") < text.index("Rule guidance:")
+
+
+def test_format_failures_html_attaches_guidance_per_violation():
+    parser = RuffParser()
+    result = RunnerResult(
+        timestamp=datetime.utcnow(),
+        success=False,
+        output={
+            "errorCount": 1,
+            "violations": [{
+                "rule": "C901",
+                "message": "too complex",
+                "file": "pkg/mod.py",
+                "line": 10,
+                "column": 1,
+            }],
+            "ruleGuidance": RUFF_JSON_WITH_GUIDANCE[1][GUIDANCE_JSON_KEY],
+        },
+    )
+    html = parser.format_failures_html(result)
+    assert "sensors-guidance" in html
+    assert "About C901:" in html
+    assert "Prefer extracting helpers." in html
+    assert html.index("sensors-violation") < html.index("sensors-guidance")
+
+
+def test_format_failures_html_skips_guidance_for_unconfigured_rules():
+    parser = RuffParser()
+    result = RunnerResult(
+        timestamp=datetime.utcnow(),
+        success=False,
+        output={
+            "errorCount": 1,
+            "violations": [{
+                "rule": "E501",
+                "message": "line too long",
+                "file": "x.py",
+                "line": 1,
+                "column": 1,
+            }],
+            "ruleGuidance": {
+                "triggered": ["C901"],
+                "rules": {
+                    "C901": {"short": "complex", "guidance": "refactor"},
+                },
+            },
+        },
+    )
+    html = parser.format_failures_html(result)
+    assert "sensors-guidance" not in html
+    assert "E501" in html
