@@ -8,6 +8,9 @@ import asyncio
 import subprocess
 import sys
 import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -21,7 +24,7 @@ from sensors.config.loader import (
     socket_path_for_config,
     state_path_for_config,
 )
-from sensors.config.schema import RunnerConfig
+from sensors.config.schema import RunnerConfig, SensorsConfig
 from sensors.orchestration.control_server import (
     control_state,
     is_sensors_running,
@@ -30,7 +33,13 @@ from sensors.orchestration.control_server import (
     stop_running_sensors,
 )
 from sensors.orchestration.orchestrator import run_sensors
-from sensors.persistence.models import CheckHistoryEntry, RunnerCheckSummary, RunnerState, Snapshot
+from sensors.persistence.models import (
+    CheckHistoryEntry,
+    RunnerCheckSummary,
+    RunnerState,
+    SensorsState,
+    Snapshot,
+)
 from sensors.persistence.state_manager import StateManager
 from sensors.tui.display import DisplayEvents, DisplayManager
 
@@ -95,6 +104,242 @@ def _score_delta(runner_name: str, runner_state: RunnerState, snapshot: Snapshot
     )
     label = "Better than snapshot" if improving else "Worse than snapshot"
     return f"{label} {diff_str}"
+
+
+_NOT_RUNNING_SHOW = (
+    "No sensors is running for this project. Start one with:\n"
+    "  sensors start .\n"
+    "or with the live display:\n"
+    "  sensors start --show ."
+)
+
+_NOT_RUNNING_SNAPSHOT = (
+    "No sensors is running for this project. Start one with:\n"
+    "  sensors start .\n"
+    "or:\n"
+    "  sensors start --show ."
+)
+
+
+def _require_running_sensors(
+    wd: str,
+    config: str | None,
+    *,
+    not_running_message: str,
+) -> tuple[Path, Path, dict]:
+    """Resolve config, verify sensors running; return (cfg_path, socket_path, control_data)."""
+    try:
+        cfg_path = resolve_config_path(wd, config)
+    except ConfigLoadError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(2) from None
+
+    ctl = control_path_for_config(cfg_path)
+    sock = socket_path_for_config(cfg_path)
+    if not is_sensors_running(ctl, sock):
+        typer.echo(not_running_message, err=True)
+        raise typer.Exit(2)
+
+    data = control_state(ctl)
+    if not data or "socketPath" not in data:
+        typer.echo("Invalid control file.", err=True)
+        raise typer.Exit(2)
+
+    return cfg_path, Path(data["socketPath"]), data
+
+
+def _make_attach_callbacks(
+    socket_path: Path,
+    display_box: list[DisplayManager | None],
+) -> tuple[
+    Callable[[], Awaitable[None]],
+    Callable[[], Awaitable[None]],
+    Callable[[str], Awaitable[None]],
+    Callable[[], Awaitable[None]],
+]:
+    async def on_snapshot() -> None:
+        res = await rpc_unix(socket_path, "snapshot")
+        d = display_box[0]
+        if d is None:
+            return
+        if res.get("ok"):
+            now = datetime.now().strftime("%H:%M:%S")
+            d._snapshot_status = f"Snapshot requested at {now}"
+        else:
+            d._snapshot_status = f"Snapshot failed: {res.get('error', res)}"
+
+    async def on_clear() -> None:
+        res = await rpc_unix(socket_path, "clear")
+        d = display_box[0]
+        if d is not None:
+            if res.get("ok"):
+                d._clear_status = "Clear requested"
+            else:
+                d._clear_status = f"Clear failed: {res.get('error', res)}"
+
+    async def on_rerun(runner_name: str) -> None:
+        res = await rpc_unix(socket_path, "rerun", params={"name": runner_name})
+        d = display_box[0]
+        if d is not None and res.get("ok"):
+            d._triggered_run_started_at[runner_name] = datetime.now()
+
+    async def on_shutdown() -> None:
+        await rpc_unix(socket_path, "shutdown")
+
+    return on_snapshot, on_clear, on_rerun, on_shutdown
+
+
+@dataclass
+class CheckContext:
+    """Loaded state and config for a ``sensors check`` run."""
+
+    state: SensorsState
+    sensors_config: SensorsConfig | None
+    runner_configs: dict[str, RunnerConfig]
+    on_check_configs: list[RunnerConfig]
+    now: datetime
+
+
+def _runner_status_text(rs: RunnerState) -> str:
+    if rs.status == "success":
+        return "SUCCESS"
+    if rs.status == "below_threshold":
+        return "SUCCESS (below threshold)"
+    return "FAILURE"
+
+
+def _check_exit_code(state: SensorsState) -> int:
+    for rs in state.runners.values():
+        if rs.status == "failure":
+            return 1
+    if any(rs.status == "below_threshold" for rs in state.runners.values()):
+        return 3
+    return 0
+
+
+def _print_check_header(
+    state: SensorsState,
+    sensors_config: SensorsConfig | None,
+    now: datetime,
+) -> None:
+    updated_ago = _seconds_ago(state.lastUpdated, now)
+    print("SENSORS STATUS")
+    if state.runners:
+        print(f"Updated: {state.lastUpdated.isoformat().replace('+00:00', 'Z')} ({updated_ago})")
+    print()
+    if sensors_config and sensors_config.prompt:
+        print(sensors_config.prompt)
+        print()
+
+
+def _print_runner_result(
+    name: str,
+    rs: RunnerState,
+    runner_configs: dict[str, RunnerConfig],
+    state: SensorsState,
+    now: datetime,
+) -> None:
+    status_text = _runner_status_text(rs)
+    details = rs.formatted.details_llm or "no details"
+    delta = _score_delta(name, rs, state.snapshot)
+    ran_ago = _seconds_ago(rs.lastRun, now)
+    line = f"{name}: {status_text} ({details}) [ran {ran_ago}]"
+    if delta:
+        line += f" | {delta}"
+    print(line)
+
+    if name in runner_configs:
+        print(f"  {_runner_description(runner_configs[name], rs)}")
+        if runner_configs[name].prompt:
+            print(f"  prompt: {runner_configs[name].prompt}")
+
+    if rs.status == "failure":
+        failures = rs.formatted.failures_llm
+        if failures:
+            print(failures)
+
+    print()
+
+
+async def _print_on_check_sections(on_check_configs: list[RunnerConfig]) -> None:
+    for rc in on_check_configs:
+        output = await _run_on_check_command(rc)
+        print(f"{rc.name}: on_check")
+        print(f"  cmd: `{rc.command}`" + (f", dir: {rc.workingDir}" if rc.workingDir else ""))
+        if rc.prompt:
+            print(f"  prompt: {rc.prompt}")
+        if output:
+            for out_line in output.rstrip("\n").splitlines():
+                print(f"  {out_line}")
+        print()
+
+
+async def _load_check_context(
+    working_dir: str,
+    runner: str | None,
+    config: str | None,
+) -> tuple[CheckContext | None, int | None]:
+    from sensors.time_util import utc_now
+
+    sm = _get_state_manager(working_dir, config)
+    await sm.log_query("check", runner)
+    now = utc_now()
+    state = await sm.read_state()
+
+    sensors_config = None
+    try:
+        sensors_config = load_config_sync(working_dir, config)
+        runner_configs = {rc.name: rc for rc in sensors_config.runners}
+    except Exception:
+        runner_configs = {}
+
+    on_check_configs = [
+        rc
+        for rc in (sensors_config.runners if sensors_config else [])
+        if rc.mode == "on_check" and rc.enabled and (runner is None or rc.name == runner)
+    ]
+
+    if runner:
+        state.runners = {k: v for k, v in state.runners.items() if k == runner}
+
+    if not state.runners and not on_check_configs:
+        print("No runner state found. Is the sensors running?", file=sys.stderr)
+        return None, 2
+
+    return (
+        CheckContext(
+            state=state,
+            sensors_config=sensors_config,
+            runner_configs=runner_configs,
+            on_check_configs=on_check_configs,
+            now=now,
+        ),
+        None,
+    )
+
+
+async def _run_check(working_dir: str, runner: str | None, config: str | None) -> int:
+    ctx, early_exit = await _load_check_context(working_dir, runner, config)
+    if early_exit is not None:
+        return early_exit
+    assert ctx is not None  # noqa: S101
+
+    sm = _get_state_manager(working_dir, config)
+    history_entry = CheckHistoryEntry(
+        timestamp=ctx.now,
+        runner_filter=runner,
+        runners={
+            name: RunnerCheckSummary(status=rs.status, score=rs.score)
+            for name, rs in ctx.state.runners.items()
+        },
+    )
+    await sm.append_check_history(history_entry)
+
+    _print_check_header(ctx.state, ctx.sensors_config, ctx.now)
+    for name, rs in ctx.state.runners.items():
+        _print_runner_result(name, rs, ctx.runner_configs, ctx.state, ctx.now)
+    await _print_on_check_sections(ctx.on_check_configs)
+    return _check_exit_code(ctx.state)
 
 
 def _get_state_manager(working_dir: str, config: str | None = None) -> StateManager:
@@ -206,30 +451,10 @@ def show_command(
     ),
 ) -> None:
     """Attach to a running sensors and show the overview (read-only viewer; Q does not stop the server)."""
-    from datetime import datetime
-
     wd = str(Path(working_dir).resolve())
-    try:
-        cfg_path = resolve_config_path(wd, config)
-    except ConfigLoadError as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=2) from None
-
-    ctl = control_path_for_config(cfg_path)
-    sock = socket_path_for_config(cfg_path)
-    if not is_sensors_running(ctl, sock):
-        typer.echo(
-            "No sensors is running for this project. Start one with:\n"
-            "  sensors start .\n"
-            "or with the live display:\n"
-            "  sensors start --show .",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-
-    data = control_state(ctl)
-    assert data is not None  # noqa: S101 -- race guard after is_sensors_running; not reachable in practice
-    socket_path = Path(data["socketPath"])
+    _cfg_path, socket_path, _data = _require_running_sensors(
+        wd, config, not_running_message=_NOT_RUNNING_SHOW
+    )
 
     try:
         sensors_config = load_config_sync(wd, config)
@@ -238,37 +463,8 @@ def show_command(
         raise typer.Exit(code=2) from None
 
     sm = _get_state_manager(wd, config)
-
     display_box: list[DisplayManager | None] = [None]
-
-    async def on_snapshot() -> None:
-        res = await rpc_unix(socket_path, "snapshot")
-        d = display_box[0]
-        if d is None:
-            return
-        if res.get("ok"):
-            now = datetime.now().strftime("%H:%M:%S")
-            d._snapshot_status = f"Snapshot requested at {now}"
-        else:
-            d._snapshot_status = f"Snapshot failed: {res.get('error', res)}"
-
-    async def on_clear() -> None:
-        res = await rpc_unix(socket_path, "clear")
-        d = display_box[0]
-        if d is not None:
-            if res.get("ok"):
-                d._clear_status = "Clear requested"
-            else:
-                d._clear_status = f"Clear failed: {res.get('error', res)}"
-
-    async def on_rerun(runner_name: str) -> None:
-        res = await rpc_unix(socket_path, "rerun", params={"name": runner_name})
-        d = display_box[0]
-        if d is not None and res.get("ok"):
-            d._triggered_run_started_at[runner_name] = datetime.now()
-
-    async def on_shutdown() -> None:
-        await rpc_unix(socket_path, "shutdown")
+    on_snapshot, on_clear, on_rerun, on_shutdown = _make_attach_callbacks(socket_path, display_box)
 
     events = DisplayEvents()
     display = DisplayManager(
@@ -294,30 +490,11 @@ def snapshot_command(
 ) -> None:
     """Tell the running sensors to save a score snapshot (same as pressing S in the TUI)."""
     wd = str(Path(working_dir).resolve())
-    try:
-        cfg_path = resolve_config_path(wd, config)
-    except ConfigLoadError as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(2) from None
+    _cfg_path, socket_path, _data = _require_running_sensors(
+        wd, config, not_running_message=_NOT_RUNNING_SNAPSHOT
+    )
 
-    ctl = control_path_for_config(cfg_path)
-    sock = socket_path_for_config(cfg_path)
-    if not is_sensors_running(ctl, sock):
-        typer.echo(
-            "No sensors is running for this project. Start one with:\n"
-            "  sensors start .\n"
-            "or:\n"
-            "  sensors start --show .",
-            err=True,
-        )
-        raise typer.Exit(2)
-
-    data = control_state(ctl)
-    if not data or "socketPath" not in data:
-        typer.echo("Invalid control file.", err=True)
-        raise typer.Exit(2)
-
-    res = rpc_unix_sync(Path(data["socketPath"]), "snapshot", timeout=10.0)
+    res = rpc_unix_sync(socket_path, "snapshot", timeout=10.0)
     if res.get("ok"):
         typer.echo("Snapshot saved.")
         raise typer.Exit(0)
@@ -418,101 +595,7 @@ def check_command(
     config: str | None = typer.Option(None, "--config", "-c", help="Config file name within .sensors/"),
 ) -> None:
     """Print runner results (agent-friendly text). Exit 0 if all pass, 1 if any failure, 2 if no state, 3 if any below threshold."""
-
-    async def _run() -> int:
-        from sensors.time_util import utc_now
-
-        sm = _get_state_manager(working_dir, config)
-
-        await sm.log_query("check", runner)
-
-        now = utc_now()
-        state = await sm.read_state()
-
-        sensors_config = None
-        try:
-            sensors_config = load_config_sync(working_dir, config)
-            runner_configs = {rc.name: rc for rc in sensors_config.runners}
-        except Exception:
-            runner_configs = {}
-
-        on_check_configs = [
-            rc for rc in (sensors_config.runners if sensors_config else [])
-            if rc.mode == "on_check" and rc.enabled and (runner is None or rc.name == runner)
-        ]
-
-        if runner:
-            state.runners = {k: v for k, v in state.runners.items() if k == runner}
-
-        if not state.runners and not on_check_configs:
-            print("No runner state found. Is the sensors running?", file=sys.stderr)
-            return 2
-
-        history_entry = CheckHistoryEntry(
-            timestamp=now,
-            runner_filter=runner,
-            runners={
-                name: RunnerCheckSummary(status=rs.status, score=rs.score)
-                for name, rs in state.runners.items()
-            },
-        )
-        await sm.append_check_history(history_entry)
-
-        updated_ago = _seconds_ago(state.lastUpdated, now)
-        print("SENSORS STATUS")
-        if state.runners:
-            print(f"Updated: {state.lastUpdated.isoformat().replace('+00:00', 'Z')} ({updated_ago})")
-        print()
-
-        if sensors_config and sensors_config.prompt:
-            print(sensors_config.prompt)
-            print()
-
-        for name, rs in state.runners.items():
-            if rs.status == "success":
-                status_text = "SUCCESS"
-            elif rs.status == "below_threshold":
-                status_text = "SUCCESS (below threshold)"
-            else:
-                status_text = "FAILURE"
-            details = rs.formatted.details_llm or "no details"
-            delta = _score_delta(name, rs, state.snapshot)
-            ran_ago = _seconds_ago(rs.lastRun, now)
-            line = f"{name}: {status_text} ({details}) [ran {ran_ago}]"
-            if delta:
-                line += f" | {delta}"
-            print(line)
-
-            if name in runner_configs:
-                print(f"  {_runner_description(runner_configs[name], rs)}")
-                if runner_configs[name].prompt:
-                    print(f"  prompt: {runner_configs[name].prompt}")
-
-            if rs.status == "failure":
-                failures = rs.formatted.failures_llm
-                if failures:
-                    print(failures)
-
-            print()
-
-        for rc in on_check_configs:
-            output = await _run_on_check_command(rc)
-            print(f"{rc.name}: on_check")
-            print(f"  cmd: `{rc.command}`" + (f", dir: {rc.workingDir}" if rc.workingDir else ""))
-            if rc.prompt:
-                print(f"  prompt: {rc.prompt}")
-            if output:
-                for out_line in output.rstrip("\n").splitlines():
-                    print(f"  {out_line}")
-            print()
-
-        has_below_threshold = any(rs.status == "below_threshold" for rs in state.runners.values())
-        for rs in state.runners.values():
-            if rs.status == "failure":
-                return 1
-        return 3 if has_below_threshold else 0
-
-    raise typer.Exit(asyncio.run(_run()))
+    raise typer.Exit(asyncio.run(_run_check(working_dir, runner, config)))
 
 
 async def _run_on_check_command(runner_cfg: RunnerConfig) -> str:
