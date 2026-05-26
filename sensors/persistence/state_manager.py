@@ -21,6 +21,35 @@ from .models import (
 )
 
 
+def _parse_dt(s: str) -> datetime:
+    """Parse ISO datetime string, stripping timezone to get naive local datetime."""
+    return datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def _hydrate_runner_states(runners: dict) -> None:
+    for runner_state in runners.values():
+        if "lastRun" in runner_state:
+            runner_state["lastRun"] = _parse_dt(runner_state["lastRun"])
+        if "result" in runner_state and "timestamp" in runner_state["result"]:
+            runner_state["result"]["timestamp"] = _parse_dt(
+                runner_state["result"]["timestamp"]
+            )
+
+
+def _hydrate_query_log(entries: list) -> None:
+    for entry in entries:
+        if "timestamp" in entry:
+            entry["timestamp"] = _parse_dt(entry["timestamp"])
+
+
+def _hydrate_snapshot(snapshot_data: dict | None) -> None:
+    if not snapshot_data:
+        return
+    if "timestamp" in snapshot_data:
+        snapshot_data["timestamp"] = _parse_dt(snapshot_data["timestamp"])
+    _hydrate_runner_states(snapshot_data.get("runners", {}))
+
+
 class StateManager:
     """Manages reading and writing sensors state to JSON files."""
 
@@ -67,44 +96,15 @@ class StateManager:
         try:
             async with aiofiles.open(self.state_file) as f:
                 content = await f.read()
-                data = json.loads(content)
+            data = json.loads(content)
 
-                def _parse_dt(s: str) -> datetime:
-                    """Parse ISO datetime string, stripping any timezone info to get naive local datetime."""
-                    return datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=None)
+            if "lastUpdated" in data:
+                data["lastUpdated"] = _parse_dt(data["lastUpdated"])
+            _hydrate_runner_states(data.get("runners", {}))
+            _hydrate_query_log(data.get("queryLog", []))
+            _hydrate_snapshot(data.get("snapshot"))
 
-                # Parse datetime strings back to datetime objects
-                if "lastUpdated" in data:
-                    data["lastUpdated"] = _parse_dt(data["lastUpdated"])
-
-                for _runner_name, runner_state in data.get("runners", {}).items():
-                    if "lastRun" in runner_state:
-                        runner_state["lastRun"] = _parse_dt(runner_state["lastRun"])
-
-                    if "result" in runner_state and "timestamp" in runner_state["result"]:
-                        runner_state["result"]["timestamp"] = _parse_dt(
-                            runner_state["result"]["timestamp"]
-                        )
-
-                # Parse query log timestamps
-                for entry in data.get("queryLog", []):
-                    if "timestamp" in entry:
-                        entry["timestamp"] = _parse_dt(entry["timestamp"])
-
-                # Parse snapshot timestamps
-                snapshot_data = data.get("snapshot")
-                if snapshot_data:
-                    if "timestamp" in snapshot_data:
-                        snapshot_data["timestamp"] = _parse_dt(snapshot_data["timestamp"])
-                    for _runner_name, runner_state in snapshot_data.get("runners", {}).items():
-                        if "lastRun" in runner_state:
-                            runner_state["lastRun"] = _parse_dt(runner_state["lastRun"])
-                        if "result" in runner_state and "timestamp" in runner_state["result"]:
-                            runner_state["result"]["timestamp"] = _parse_dt(
-                                runner_state["result"]["timestamp"]
-                            )
-
-                return SensorsState(**data)
+            return SensorsState(**data)
 
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             # If file is corrupted, return empty state
