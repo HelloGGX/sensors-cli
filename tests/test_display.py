@@ -5,7 +5,7 @@ import tempfile
 from datetime import datetime, timedelta
 from io import StringIO
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.console import Console
@@ -257,44 +257,176 @@ def test_last_run_finished_trigger_compare():
     assert not DisplayManager._last_run_finished_trigger(t0, t1)
 
 
-def test_keypress_s_sets_snapshot_event():
+@pytest.mark.asyncio
+async def test_handle_key_s_sets_snapshot_event():
     """Pressing S sets the snapshot event."""
     events = DisplayEvents()
     display = DisplayManager(StateManager(), events=events)
-    display._check_keypress = lambda fd: "s"  # type: ignore[method-assign]
-    # Simulate the keypress handling inline (mirrors run() logic)
-    ch = display._check_keypress(0)
-    if ch and ch.lower() == "s":
-        events.snapshot.set()
+    await display._handle_key("s")
     assert events.snapshot.is_set()
     assert not events.clear.is_set()
     assert not events.shutdown.is_set()
 
 
-def test_keypress_c_sets_clear_event():
+@pytest.mark.asyncio
+async def test_handle_key_c_sets_clear_event():
     """Pressing C sets the clear event."""
     events = DisplayEvents()
     display = DisplayManager(StateManager(), events=events)
-    ch = "c"
-    if ch and ch.lower() == "c":
-        display._clear_status = "Clearing..."
-        events.clear.set()
+    await display._handle_key("c")
     assert events.clear.is_set()
     assert display._clear_status == "Clearing..."
     assert not events.snapshot.is_set()
     assert not events.shutdown.is_set()
 
 
-def test_keypress_q_sets_shutdown_event():
+@pytest.mark.asyncio
+async def test_handle_key_q_sets_shutdown_event():
     """Pressing Q sets the shutdown event."""
     events = DisplayEvents()
-    DisplayManager(StateManager(), events=events)
-    ch = "q"
-    if ch and ch.lower() == "q":
-        events.shutdown.set()
+    display = DisplayManager(StateManager(), events=events)
+    await display._handle_key("q")
     assert events.shutdown.is_set()
     assert not events.snapshot.is_set()
     assert not events.clear.is_set()
+
+
+@pytest.mark.asyncio
+async def test_handle_key_w_stops_display():
+    """Pressing W closes the viewer without signaling shutdown."""
+    events = DisplayEvents()
+    display = DisplayManager(StateManager(), events=events)
+    await display._handle_key("w")
+    assert display._should_stop
+    assert not events.shutdown.is_set()
+
+
+@pytest.mark.asyncio
+async def test_handle_key_attach_mode_delegates_to_callbacks():
+    """In attach mode, action keys invoke RPC callbacks instead of local events."""
+    events = DisplayEvents()
+    on_snapshot = AsyncMock()
+    on_clear = AsyncMock()
+    on_rerun = AsyncMock()
+    on_shutdown = AsyncMock()
+    display = DisplayManager(
+        StateManager(),
+        events=events,
+        attach=True,
+        on_snapshot=on_snapshot,
+        on_clear=on_clear,
+        on_rerun=on_rerun,
+        on_shutdown=on_shutdown,
+    )
+    display._runner_display_order = ["eslint"]
+
+    await display._handle_key("s")
+    await display._handle_key("c")
+    await display._handle_key("1")
+    await display._handle_key("q")
+
+    on_snapshot.assert_awaited_once()
+    on_clear.assert_awaited_once()
+    on_rerun.assert_awaited_once_with("eslint")
+    on_shutdown.assert_awaited_once()
+    assert not events.snapshot.is_set()
+    assert not events.clear.is_set()
+    assert not events.shutdown.is_set()
+    assert display._should_stop
+
+
+def test_runner_row_cells_on_check():
+    """on_check mode returns a static hint in the details cell."""
+    display = DisplayManager(StateManager())
+    from sensors.persistence.models import SensorsState
+
+    state = SensorsState(lastUpdated=datetime.now(), runners={})
+    _, _, _, details = display._runner_row_cells("ruff", state, on_check=True)
+    assert "Runs on" in details
+    assert "sensors check" in details
+
+
+@pytest.mark.asyncio
+async def test_populate_table_on_check_runner():
+    """on_check runners appear in the table with the on_check mode label."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sm = StateManager(Path(tmpdir) / "state.json")
+        cfgs = [
+            RunnerConfig(
+                name="ruff",
+                parser="ruff",
+                enabled=True,
+                mode=RunnerMode.ON_CHECK,
+                command="ruff check",
+            ),
+        ]
+        display = DisplayManager(sm, runner_configs=cfgs)
+        table = display._create_table()
+        state = await sm.read_state()
+        await display._populate_table(table, state=state)
+        assert table.row_count == 1
+        assert display._runner_modes["ruff"] == "on_check"
+
+
+@pytest.mark.asyncio
+async def test_populate_table_extra_runner_not_in_config():
+    """Runners in state but not in config still appear in the table."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sm = StateManager(Path(tmpdir) / "state.json")
+        now = datetime.now()
+        await sm.update_state(
+            "orphan",
+            RunnerState(
+                lastRun=now,
+                status="success",
+                formatted=FormattedOutput(details_terminal="[green]ok[/green]"),
+            ),
+        )
+        display = DisplayManager(sm, runner_configs=[])
+        table = display._create_table()
+        await display._populate_table(table)
+        buf = StringIO()
+        Console(file=buf, force_terminal=True, width=120).print(table)
+        assert "orphan" in buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_populate_table_triggered_running_overlay():
+    """Digit-triggered runner shows Running… until state catches up."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sm = StateManager(Path(tmpdir) / "state.json")
+        cfgs = [
+            RunnerConfig(
+                name="lint",
+                parser="eslint",
+                enabled=True,
+                mode=RunnerMode.TRIGGERED,
+                command="eslint .",
+            ),
+        ]
+        display = DisplayManager(sm, runner_configs=cfgs)
+        display._triggered_run_started_at["lint"] = datetime.now()
+        table = display._create_table()
+        await display._populate_table(table)
+        buf = StringIO()
+        Console(file=buf, force_terminal=True, width=120).print(table)
+        assert "Running…" in buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_populate_table_no_runners_active():
+    """Empty config and empty state show a placeholder row."""
+    from sensors.persistence.models import SensorsState
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sm = StateManager(Path(tmpdir) / "state.json")
+        display = DisplayManager(sm, runner_configs=[])
+        table = MagicMock()
+        state = SensorsState(lastUpdated=datetime.now(), runners={})
+        await display._populate_table(table, state=state)
+        table.add_row.assert_called_once_with(
+            "[dim]No runners active[/dim]", "", "", "", "", "", ""
+        )
 
 
 @pytest.mark.asyncio
