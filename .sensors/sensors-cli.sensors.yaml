@@ -30,11 +30,3 @@ runners:
     mode: interval
     command: python ./.sensors/maintainability/ruff_guidance.py -- --select S check sensors/
     interval: 10000
-  
-  - name: imports
-    parser: import_linter
-    enabled: true
-    mode: interval
-    command: uv run lint-imports
-    interval: 26000
-    prompt: "For now, ignore any feedback from the import linter, as we're still evolving the rules"
