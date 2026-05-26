@@ -161,45 +161,54 @@ class PytestCovParser(OutputParser):
             return ""
         return self._format_failure_items(result, "llm")
 
+    def _format_coverage_failure(self, cov_fail: str, style: str) -> list[str]:
+        if style == "terminal":
+            return [f"  [red]{cov_fail}[/red]"]
+        if style == "html":
+            return [
+                f'<div class="sensors-violation">'
+                f'<span class="sensors-error">{cov_fail}</span></div>'
+            ]
+        return [f"  {cov_fail}"]
+
+    def _format_low_coverage_files(self, low: list[dict], style: str) -> list[str]:
+        if not low:
+            return []
+        if style == "terminal":
+            lines = ["  [yellow]Low coverage files:[/yellow]"]
+            lines.extend(f"    [dim]{f['name']}[/dim] {f['cover']}%" for f in low)
+            return lines
+        if style == "html":
+            return [
+                f'<div class="sensors-violation">'
+                f'<span class="sensors-file">{f["name"]}</span> '
+                f'<span class="sensors-warn">{f["cover"]}%</span>'
+                f'</div>'
+                for f in low
+            ]
+        lines = ["  Low coverage files:"]
+        lines.extend(f"    {f['name']} {f['cover']}%" for f in low)
+        return lines
+
+    def _format_failed_tests_fallback(self, failed: int, style: str) -> list[str]:
+        msg = f"{failed} test{'s' if failed != 1 else ''} failed"
+        if style == "terminal":
+            return [f"  [red]{msg}[/red]"]
+        if style == "html":
+            return [f'<span class="sensors-error">{msg}</span>']
+        return [f"  {msg}"]
+
     def _format_failure_items(self, result: RunnerResult, style: str) -> str:
-        lines = []
+        lines: list[str] = []
 
         cov_fail = result.output.get("coverageFailure")
         if cov_fail:
-            if style == "terminal":
-                lines.append(f"  [red]{cov_fail}[/red]")
-            elif style == "html":
-                lines.append(f'<div class="sensors-violation"><span class="sensors-error">{cov_fail}</span></div>')
-            else:
-                lines.append(f"  {cov_fail}")
+            lines.extend(self._format_coverage_failure(cov_fail, style))
 
-        low = self._get_low_coverage_files(result)
-        if low:
-            if style == "terminal":
-                lines.append("  [yellow]Low coverage files:[/yellow]")
-                for f in low:
-                    lines.append(f"    [dim]{f['name']}[/dim] {f['cover']}%")
-            elif style == "html":
-                for f in low:
-                    lines.append(
-                        f'<div class="sensors-violation">'
-                        f'<span class="sensors-file">{f["name"]}</span> '
-                        f'<span class="sensors-warn">{f["cover"]}%</span>'
-                        f'</div>'
-                    )
-            else:
-                lines.append("  Low coverage files:")
-                for f in low:
-                    lines.append(f"    {f['name']} {f['cover']}%")
+        lines.extend(self._format_low_coverage_files(self._get_low_coverage_files(result), style))
 
         failed = result.output.get("numFailedTests", 0)
         if failed and not lines:
-            msg = f"{failed} test{'s' if failed != 1 else ''} failed"
-            if style == "terminal":
-                lines.append(f"  [red]{msg}[/red]")
-            elif style == "html":
-                lines.append(f'<span class="sensors-error">{msg}</span>')
-            else:
-                lines.append(f"  {msg}")
+            lines.extend(self._format_failed_tests_fallback(failed, style))
 
         return "\n".join(lines)

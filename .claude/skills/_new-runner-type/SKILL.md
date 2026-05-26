@@ -12,7 +12,7 @@ The sensors system uses a plugin architecture: a `GenericRunner` handles all pro
 
 ### 1. Understand the Interface
 
-Read `sensors/parsers/base.py` — this is the source of truth for the `OutputParser` abstract base class. Do NOT guess the interface; always read the file.
+Read `sensors/runners/parsers/base.py` — this is the source of truth for the `OutputParser` abstract base class. Do NOT guess the interface; always read the file.
 
 The parser also uses `RunnerResult` and `ScoreInfo` defined in `sensors/persistence/models.py`, read that as well.
 
@@ -22,9 +22,11 @@ Ask the user for a sample output from the tool/command, or a file containing one
 
 ### 3. Create the Parser
 
-Create the parser file at `sensors/parsers/<parser_name>.py`.
+Create the parser file at `sensors/runners/parsers/<parser_name>.py`.
 
 Implement all the methods defined in `base.py`, you'll find documentation for all of them in the file
+
+**Keep concerns separated:** parsing, classification, aggregation, and result assembly are different jobs — don't fold them into one large `parse_output`. The same applies to failure formatting (parsing failures vs. rendering them per output style). Split helpers as needed so each function stays small and readable; see existing parsers for how far to take it.
 
 **Key rules:**
 
@@ -38,9 +40,9 @@ Implement all the methods defined in `base.py`, you'll find documentation for al
 
 **Reference implementations** — read these for patterns:
 
-- `sensors/parsers/eslint.py` — JSON output parser with violations
-- `sensors/parsers/vitest.py` — text output parser with regex
-- `sensors/parsers/pytest.py` — text output parser with test results
+- `sensors/runners/parsers/eslint.py` — JSON output parser with violations
+- `sensors/runners/parsers/vitest.py` — text output parser with regex
+- `sensors/runners/parsers/pytest.py` — text output parser with test results
 
 ### 4. Create Tests
 
@@ -89,7 +91,7 @@ Run tests with: `uv run pytest tests/test_<parser_name>.py -v`
 
 ### 5. Register the Parser
 
-Edit `sensors/parsers/__init__.py`:
+Edit `sensors/runners/parsers/__init__.py`:
 
 1. Add an import: `from .<parser_name> import <ParserClassName>`
 2. Add registration: `ParserRegistry.register("<parser_name>", <ParserClassName>)`
@@ -135,6 +137,6 @@ The `--force` flag is needed to overwrite the existing installation.
 
 - Parser name: lowercase, underscores for multi-word (e.g., `pytest_cov`)
 - Class name: PascalCase + "Parser" suffix (e.g., `PytestCovParser`)
-- File: `sensors/parsers/<parser_name>.py`
+- File: `sensors/runners/parsers/<parser_name>.py`
 - Test: `tests/test_<parser_name>.py`
 - Config parser field matches the registered name exactly

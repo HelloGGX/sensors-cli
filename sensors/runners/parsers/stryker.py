@@ -51,90 +51,87 @@ def _empty_count_map() -> dict[str, int]:
     return {k: 0 for k in _STATUS_TO_KEY.values()} | {"unknown": 0}
 
 
+def _parse_error_result(parse_error: str, raw: str) -> RunnerResult:
+    return RunnerResult(
+        timestamp=datetime.now(),
+        success=False,
+        output={"parseError": parse_error, "raw": raw},
+    )
+
+
+def _load_stryker_report(text: str) -> dict[str, Any] | RunnerResult:
+    """Return parsed report data, or an error RunnerResult."""
+    if not text:
+        return _parse_error_result("empty output", "")
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        return _parse_error_result("expected JSON object", text[:500])
+    files = data.get("files")
+    if not isinstance(files, dict):
+        return _parse_error_result("missing or invalid 'files'", text[:500])
+    return data
+
+
+def _count_mutant_statuses(files: dict[str, Any]) -> dict[str, int]:
+    cmap = _empty_count_map()
+    for file_result in files.values():
+        if not isinstance(file_result, dict):
+            continue
+        mutants = file_result.get("mutants") or []
+        if not isinstance(mutants, list):
+            continue
+        for m in mutants:
+            if not isinstance(m, dict):
+                continue
+            status = m.get("status", "")
+            if not isinstance(status, str):
+                status = str(status)
+            key = _STATUS_TO_KEY.get(status, "unknown")
+            cmap[key] = cmap.get(key, 0) + 1
+    return cmap
+
+
+def _build_stryker_output(data: dict[str, Any], cmap: dict[str, int]) -> dict[str, Any]:
+    killed, timeout = cmap["killed"], cmap["timeout"]
+    survived, noc = cmap["survived"], cmap["noCoverage"]
+    detected = killed + timeout
+    valid = killed + timeout + survived + noc
+    covered = killed + timeout + survived
+    thresholds = data.get("thresholds") if isinstance(data.get("thresholds"), dict) else {}
+    return {
+        "schemaVersion": data.get("schemaVersion", ""),
+        "counts": {
+            **cmap,
+            "detected": detected,
+            "valid": valid,
+            "covered": covered,
+        },
+        "mutationScoreOfTotal": _pct(detected, valid),
+        "mutationScoreOfCovered": _pct(detected, covered),
+        "thresholds": thresholds,
+    }
+
+
 class StrykerParser(OutputParser):
     """Parser for Stryker / mutation-testing-elements JSON report files."""
 
     async def parse_output(self, output: str) -> RunnerResult:
         try:
             text = output.strip()
-            if not text:
-                return RunnerResult(
-                    timestamp=datetime.now(),
-                    success=False,
-                    output={"parseError": "empty output", "raw": ""},
-                )
-            data = json.loads(text)
-            if not isinstance(data, dict):
-                return RunnerResult(
-                    timestamp=datetime.now(),
-                    success=False,
-                    output={"parseError": "expected JSON object", "raw": text[:500]},
-                )
+            loaded = _load_stryker_report(text)
+            if isinstance(loaded, RunnerResult):
+                return loaded
 
-            files = data.get("files")
-            if not isinstance(files, dict):
-                return RunnerResult(
-                    timestamp=datetime.now(),
-                    success=False,
-                    output={"parseError": "missing or invalid 'files'", "raw": text[:500]},
-                )
-
-            cmap = _empty_count_map()
-
-            for file_result in files.values():
-                if not isinstance(file_result, dict):
-                    continue
-                mutants = file_result.get("mutants") or []
-                if not isinstance(mutants, list):
-                    continue
-                for m in mutants:
-                    if not isinstance(m, dict):
-                        continue
-                    status = m.get("status", "")
-                    if not isinstance(status, str):
-                        status = str(status)
-                    key = _STATUS_TO_KEY.get(status, "unknown")
-                    cmap[key] = cmap.get(key, 0) + 1
-
-            killed, timeout = cmap["killed"], cmap["timeout"]
-            survived, noc = cmap["survived"], cmap["noCoverage"]
-            detected = killed + timeout
-            valid = killed + timeout + survived + noc
-            covered = killed + timeout + survived
-            score_total = _pct(detected, valid)
-            score_covered = _pct(detected, covered)
-
-            thresholds = data.get("thresholds") if isinstance(data.get("thresholds"), dict) else {}
-
-            out: dict[str, Any] = {
-                "schemaVersion": data.get("schemaVersion", ""),
-                "counts": {
-                    **cmap,
-                    "detected": detected,
-                    "valid": valid,
-                    "covered": covered,
-                },
-                "mutationScoreOfTotal": score_total,
-                "mutationScoreOfCovered": score_covered,
-                "thresholds": thresholds,
-            }
+            cmap = _count_mutant_statuses(loaded["files"])
             return RunnerResult(
                 timestamp=datetime.now(),
                 success=True,
-                output=out,
+                output=_build_stryker_output(loaded, cmap),
             )
         except json.JSONDecodeError as e:
-            return RunnerResult(
-                timestamp=datetime.now(),
-                success=False,
-                output={"parseError": str(e), "raw": output[:500]},
-            )
+            return _parse_error_result(str(e), output[:500])
         except Exception as e:
-            return RunnerResult(
-                timestamp=datetime.now(),
-                success=False,
-                output={"parseError": str(e), "raw": output[:500]},
-            )
+            return _parse_error_result(str(e), output[:500])
 
     def calculate_score(self, result: RunnerResult) -> ScoreInfo:
         """Main trend score: mutation score of covered code (0–100, higher is better)."""

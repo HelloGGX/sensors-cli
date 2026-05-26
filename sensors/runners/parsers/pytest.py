@@ -150,53 +150,13 @@ class PytestParser(OutputParser):
             return ""
 
         failures = result.output.get("failures", [])
-
         if not failures:
             _, failed, errors = self._counts(result)
-            total = failed + errors
-            msg = f"{total} issue{'s' if total != 1 else ''} (no details available)"
-            if style == "terminal":
-                return f"  [red]{msg}[/red]"
-            if style == "html":
-                return f'<span class="sensors-error">{msg}</span>'
-            return f"  {msg}"
+            return _format_no_failure_details(failed + errors, style)
 
-        lines = []
+        lines: list[str] = []
         for failure in failures:
-            if failure.get("type") == "collection_error":
-                file_ref = failure.get("file", "unknown")
-                message = failure.get("message", "")[:200]
-                if style == "terminal":
-                    lines.append(f"  [red]COLLECTION ERROR:[/red] [dim]{file_ref}[/dim]")
-                    lines.append(f"    {message}")
-                elif style == "html":
-                    lines.append(
-                        f'<div class="sensors-violation">'
-                        f'<span class="sensors-error">COLLECTION ERROR:</span> '
-                        f'<span class="sensors-file">{file_ref}</span>'
-                        f'<div class="sensors-message">{message}</div>'
-                        f'</div>'
-                    )
-                else:
-                    lines.append(f"  COLLECTION ERROR: {file_ref}")
-                    lines.append(f"    {message}")
-            elif failure.get("type") == "test_failure":
-                test_name = failure.get("test", "unknown")
-                message = failure.get("message", "")[:200]
-                if style == "terminal":
-                    lines.append(f"  [red]TEST FAILURE:[/red] {test_name}")
-                    lines.append(f"    {message}")
-                elif style == "html":
-                    lines.append(
-                        f'<div class="sensors-violation">'
-                        f'<span class="sensors-error">TEST FAILURE:</span> {test_name}'
-                        f'<div class="sensors-message">{message}</div>'
-                        f'</div>'
-                    )
-                else:
-                    lines.append(f"  TEST FAILURE: {test_name}")
-                    lines.append(f"    {message}")
-
+            lines.extend(_format_single_failure(failure, style))
         return "\n".join(lines)
 
     def format_failures_terminal(self, result: RunnerResult) -> str:
@@ -207,3 +167,57 @@ class PytestParser(OutputParser):
 
     def format_failures_llm(self, result: RunnerResult) -> str:
         return self._format_failure_items(result, "llm")
+
+
+def _format_no_failure_details(total: int, style: str) -> str:
+    msg = f"{total} issue{'s' if total != 1 else ''} (no details available)"
+    if style == "terminal":
+        return f"  [red]{msg}[/red]"
+    if style == "html":
+        return f'<span class="sensors-error">{msg}</span>'
+    return f"  {msg}"
+
+
+def _format_single_failure(failure: dict[str, Any], style: str) -> list[str]:
+    if failure.get("type") == "collection_error":
+        file_ref = failure.get("file", "unknown")
+        message = failure.get("message", "")[:200]
+        if style == "terminal":
+            return [
+                f"  [red]COLLECTION ERROR:[/red] [dim]{file_ref}[/dim]",
+                f"    {message}",
+            ]
+        if style == "html":
+            return [
+                f'<div class="sensors-violation">'
+                f'<span class="sensors-error">COLLECTION ERROR:</span> '
+                f'<span class="sensors-file">{file_ref}</span>'
+                f'<div class="sensors-message">{message}</div>'
+                f'</div>'
+            ]
+        return [
+            f"  COLLECTION ERROR: {file_ref}",
+            f"    {message}",
+        ]
+
+    if failure.get("type") == "test_failure":
+        test_name = failure.get("test", "unknown")
+        message = failure.get("message", "")[:200]
+        if style == "terminal":
+            return [
+                f"  [red]TEST FAILURE:[/red] {test_name}",
+                f"    {message}",
+            ]
+        if style == "html":
+            return [
+                f'<div class="sensors-violation">'
+                f'<span class="sensors-error">TEST FAILURE:</span> {test_name}'
+                f'<div class="sensors-message">{message}</div>'
+                f'</div>'
+            ]
+        return [
+            f"  TEST FAILURE: {test_name}",
+            f"    {message}",
+        ]
+
+    return []

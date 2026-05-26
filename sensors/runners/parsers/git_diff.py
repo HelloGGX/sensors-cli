@@ -59,76 +59,88 @@ class GitDiffParser(OutputParser):
 
     # -- Parsing --
 
+    def _parse_numstat_line(self, line: str, *, untracked: bool) -> dict | None:
+        if not line:
+            return None
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            return None
+        added_str, removed_str, filename = parts
+        if untracked:
+            if added_str == "-":
+                return None
+            try:
+                added = int(added_str)
+            except ValueError:
+                return None
+            return {"file": filename, "added": added, "removed": 0}
+        if added_str == "-" or removed_str == "-":
+            return None  # binary file
+        try:
+            added, removed = int(added_str), int(removed_str)
+        except ValueError:
+            return None
+        return {"file": filename, "added": added, "removed": removed}
+
+    def _parse_numstat_section(
+        self, section: str, *, untracked: bool
+    ) -> tuple[list[dict], list[dict]]:
+        source_files: list[dict] = []
+        test_files: list[dict] = []
+        for line in section.splitlines():
+            entry = self._parse_numstat_line(line.strip(), untracked=untracked)
+            if entry is None:
+                continue
+            target = test_files if self._is_test_file(entry["file"]) else source_files
+            target.append(entry)
+        return source_files, test_files
+
+    def _aggregate_and_build_result(
+        self, source_files: list[dict], test_files: list[dict]
+    ) -> RunnerResult:
+        source_files.sort(key=lambda f: f["added"] + f["removed"], reverse=True)
+
+        src_added = sum(f["added"] for f in source_files)
+        src_removed = sum(f["removed"] for f in source_files)
+        src_unique_dirs = len({str(Path(f["file"]).parent) for f in source_files})
+        test_added = sum(f["added"] for f in test_files)
+        test_removed = sum(f["removed"] for f in test_files)
+
+        return RunnerResult(
+            timestamp=datetime.now(),
+            success=True,  # always — agent decides whether to reflect
+            output={
+                "linesAdded": src_added,
+                "linesRemoved": src_removed,
+                "totalChanged": src_added + src_removed,
+                "filesChanged": len(source_files),
+                "uniqueDirs": src_unique_dirs,
+                "files": source_files,
+                "testLinesAdded": test_added,
+                "testLinesRemoved": test_removed,
+                "testFilesChanged": len(test_files),
+                "testFiles": test_files,
+            },
+        )
+
     async def parse_output(self, output: str) -> RunnerResult:
         try:
-            source_files: list[dict] = []
-            test_files: list[dict] = []
-
             if "---UNTRACKED---" in output:
                 diff_section, untracked_section = output.split("---UNTRACKED---", 1)
             else:
                 diff_section = output
                 untracked_section = ""
 
-            for line in diff_section.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split("\t", 2)
-                if len(parts) != 3:
-                    continue
-                added_str, removed_str, filename = parts
-                if added_str == "-" or removed_str == "-":
-                    continue  # binary file
-                try:
-                    added, removed = int(added_str), int(removed_str)
-                except ValueError:
-                    continue
-                entry = {"file": filename, "added": added, "removed": removed}
-                (test_files if self._is_test_file(filename) else source_files).append(entry)
-
-            for line in untracked_section.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split("\t", 2)
-                if len(parts) != 3:
-                    continue
-                added_str, _, filename = parts
-                if added_str == "-":
-                    continue
-                try:
-                    added = int(added_str)
-                except ValueError:
-                    continue
-                entry = {"file": filename, "added": added, "removed": 0}
-                (test_files if self._is_test_file(filename) else source_files).append(entry)
-
-            # Sort source files largest first so the agent sees the biggest changes up top
-            source_files.sort(key=lambda f: f["added"] + f["removed"], reverse=True)
-
-            src_added = sum(f["added"] for f in source_files)
-            src_removed = sum(f["removed"] for f in source_files)
-            src_unique_dirs = len({str(Path(f["file"]).parent) for f in source_files})
-            test_added = sum(f["added"] for f in test_files)
-            test_removed = sum(f["removed"] for f in test_files)
-
-            return RunnerResult(
-                timestamp=datetime.now(),
-                success=True,  # always — agent decides whether to reflect
-                output={
-                    "linesAdded": src_added,
-                    "linesRemoved": src_removed,
-                    "totalChanged": src_added + src_removed,
-                    "filesChanged": len(source_files),
-                    "uniqueDirs": src_unique_dirs,
-                    "files": source_files,
-                    "testLinesAdded": test_added,
-                    "testLinesRemoved": test_removed,
-                    "testFilesChanged": len(test_files),
-                    "testFiles": test_files,
-                },
+            source_files, test_files = self._parse_numstat_section(
+                diff_section, untracked=False
             )
+            untracked_src, untracked_test = self._parse_numstat_section(
+                untracked_section, untracked=True
+            )
+            source_files.extend(untracked_src)
+            test_files.extend(untracked_test)
+
+            return self._aggregate_and_build_result(source_files, test_files)
         except Exception as e:
             return RunnerResult(
                 timestamp=datetime.now(),
