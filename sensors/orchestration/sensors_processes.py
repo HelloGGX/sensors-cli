@@ -51,6 +51,26 @@ def project_root_from_lsof_sensors_socket(pid: int) -> Path | None:
     return None
 
 
+def _project_root_from_control_data(data: dict) -> Path | None:
+    """Derive project root from control JSON: ``workingDir`` or ``socketPath`` parent chain."""
+    wd = data.get("workingDir")
+    if wd:
+        try:
+            return Path(wd).resolve()
+        except OSError:
+            return Path(wd)
+    sock_s = data.get("socketPath")
+    if not sock_s:
+        return None
+    sock = Path(sock_s)
+    try:
+        sock_r = sock.resolve()
+    except OSError:
+        sock_r = sock
+    # .../proj/.sensors/stem.sock
+    return sock_r.parent.parent
+
+
 def project_root_from_control_files(pid: int, search_bases: list[Path]) -> Path | None:
     """Find ``.sensors/*.control.json`` listing this ``pid``; return project root (parent of ``.sensors/``).
 
@@ -72,27 +92,11 @@ def project_root_from_control_files(pid: int, search_bases: list[Path]) -> Path 
             except (json.JSONDecodeError, OSError):
                 continue
             cpid = data.get("pid")
-            if cpid is None:
+            if cpid is None or int(cpid) != want:
                 continue
-            if int(cpid) != want:
-                continue
-            # Prefer explicit workingDir when available.
-            wd = data.get("workingDir")
-            if wd:
-                try:
-                    return Path(wd).resolve()
-                except OSError:
-                    return Path(wd)
-            sock_s = data.get("socketPath")
-            if not sock_s:
-                continue
-            sock = Path(sock_s)
-            try:
-                sock_r = sock.resolve()
-            except OSError:
-                sock_r = sock
-            # .../proj/.sensors/stem.sock
-            return sock_r.parent.parent
+            root = _project_root_from_control_data(data)
+            if root is not None:
+                return root
     return None
 
 
