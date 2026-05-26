@@ -241,6 +241,74 @@ class GenericRunner:
             # -f flushes output after each write (real-time streaming)
             return f'script -qfc {shlex.quote(command)} /dev/null'
 
+    @staticmethod
+    def _backoff_delay(current: float, max_delay: float = 60.0) -> float:
+        """Return the next retry delay after exponential backoff."""
+        return min(current * 2, max_delay)
+
+    async def _spawn_watch_process(self, command: str) -> asyncio.subprocess.Process:
+        """Spawn the watch-mode subprocess wrapped with ``script`` for a PTY."""
+        wrapped_command = self._wrap_with_script(command)
+        env = {**os.environ, 'NO_COLOR': '1', 'FORCE_COLOR': '0'}
+        return await asyncio.create_subprocess_shell(
+            wrapped_command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            stdin=asyncio.subprocess.DEVNULL,
+            cwd=self.config.workingDir,
+            env=env,
+        )
+
+    async def _parse_watch_accumulated(self, accumulated: list[str]) -> None:
+        """Parse accumulated watch output and persist the result."""
+        complete_output = '\n'.join(accumulated)
+        stripped = self.strip_ansi(complete_output)
+        parse_input = await self._parser_input_from_run(stripped)
+        if isinstance(parse_input, RunnerResult):
+            result = parse_input
+        else:
+            result = await self.parser.parse_output(parse_input)
+        await self.on_result(result)
+
+    async def _handle_watch_line(self, line: str, accumulated: list[str]) -> list[str]:
+        """Append a line; parse and reset when the parser signals a run boundary."""
+        accumulated.append(line)
+        if not self.parser.is_watch_run_complete(line):
+            return accumulated
+        try:
+            await self._parse_watch_accumulated(accumulated)
+        except Exception as e:
+            print(f"[{self.config.name}] Parse error: {e}")
+            logger.exception("[%s] Parse error in watch mode", self.config.name)
+        return []
+
+    async def _terminate_watch_process(self, process: asyncio.subprocess.Process) -> None:
+        """Terminate a watch subprocess that is still running."""
+        try:
+            process.terminate()
+            await asyncio.wait_for(process.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            try:
+                process.kill()
+                await asyncio.wait_for(process.wait(), timeout=1.0)
+            except Exception:
+                logger.debug("Process cleanup failed during shutdown", exc_info=True)
+        except Exception:
+            logger.debug("Process already dead or cleanup error", exc_info=True)
+
+    async def _sleep_watch_retry(self, retry_delay: float, max_retry_delay: float) -> float:
+        """Log, sleep, and return the next backoff delay after an unexpected exit."""
+        print(
+            f"[{self.config.name}] Watch process exited, restarting in {retry_delay}s"
+        )
+        logger.warning(
+            "[%s] Watch process exited unexpectedly, restarting in %.1fs",
+            self.config.name,
+            retry_delay,
+        )
+        await asyncio.sleep(retry_delay)
+        return self._backoff_delay(retry_delay, max_retry_delay)
+
     async def _run_watch_mode(self) -> None:
         """Execute runner in watch mode using ``script`` for TTY support.
 
@@ -262,20 +330,7 @@ class GenericRunner:
             process = None
             try:
                 command = self.config.watchCommand or self.config.command
-                wrapped_command = self._wrap_with_script(command)
-
-                # Disable color output so we get clean text to parse
-                env = {**os.environ, 'NO_COLOR': '1', 'FORCE_COLOR': '0'}
-
-                process = await asyncio.create_subprocess_shell(
-                    wrapped_command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,  # merge stderr into stdout
-                    stdin=asyncio.subprocess.DEVNULL,
-                    cwd=self.config.workingDir,
-                    env=env,
-                )
-
+                process = await self._spawn_watch_process(command)
                 retry_delay = 1.0
                 accumulated_output: list[str] = []
 
@@ -283,65 +338,32 @@ class GenericRunner:
                     async for raw_line in process.stdout:
                         if self._should_stop:
                             break
-
                         line = self.strip_ansi(
                             raw_line.decode('utf-8', errors='ignore')
                         ).rstrip('\n')
-
-                        accumulated_output.append(line)
-
-                        if self.parser.is_watch_run_complete(line):
-                            try:
-                                complete_output = '\n'.join(accumulated_output)
-                                stripped = self.strip_ansi(complete_output)
-                                parse_input = await self._parser_input_from_run(stripped)
-                                if isinstance(parse_input, RunnerResult):
-                                    result = parse_input
-                                else:
-                                    result = await self.parser.parse_output(parse_input)
-                                await self.on_result(result)
-                            except Exception as e:
-                                print(f"[{self.config.name}] Parse error: {e}")
-                                logger.exception(
-                                    "[%s] Parse error in watch mode", self.config.name
-                                )
-                            # Reset accumulator for next run
-                            accumulated_output = []
+                        accumulated_output = await self._handle_watch_line(
+                            line, accumulated_output
+                        )
 
                 if process:
                     await process.wait()
 
                 if not self._should_stop:
-                    print(f"[{self.config.name}] Watch process exited, restarting in {retry_delay}s")
-                    logger.warning(
-                        "[%s] Watch process exited unexpectedly, restarting in %.1fs",
-                        self.config.name,
-                        retry_delay,
+                    retry_delay = await self._sleep_watch_retry(
+                        retry_delay, max_retry_delay
                     )
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, max_retry_delay)
 
             except Exception as e:
                 if not self._should_stop:
                     print(f"[{self.config.name}] Error in watch mode: {e}")
-                    logger.exception("[%s] Unhandled error in watch mode", self.config.name)
+                    logger.exception(
+                        "[%s] Unhandled error in watch mode", self.config.name
+                    )
                     await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, max_retry_delay)
+                    retry_delay = self._backoff_delay(retry_delay, max_retry_delay)
             finally:
-                # Ensure the process is terminated on exit
                 if process and process.returncode is None:
-                    try:
-                        process.terminate()
-                        await asyncio.wait_for(process.wait(), timeout=2.0)
-                    except asyncio.TimeoutError:
-                        # Process didn't terminate gracefully, force kill
-                        try:
-                            process.kill()
-                            await asyncio.wait_for(process.wait(), timeout=1.0)
-                        except Exception:
-                            logger.debug("Process cleanup failed during shutdown", exc_info=True)
-                    except Exception:
-                        logger.debug("Process already dead or cleanup error", exc_info=True)
+                    await self._terminate_watch_process(process)
 
     async def _run_interval_command_once(self) -> None:
         """Run the interval/triggered shell command once and persist the result."""
