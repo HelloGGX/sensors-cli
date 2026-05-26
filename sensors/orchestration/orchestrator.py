@@ -7,7 +7,9 @@ import contextlib
 import logging
 import os
 import signal
+from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum, auto
 from pathlib import Path
 from typing import Literal
 
@@ -39,6 +41,46 @@ logger = logging.getLogger(__name__)
 DisplayMode = Literal["none", "inline"]
 
 
+class OrchestratorEventType(Enum):
+    """First-completed wait result in the main orchestration loop."""
+
+    SNAPSHOT = auto()
+    SHUTDOWN = auto()
+    CLEAR = auto()
+    RUNNER_EXIT = auto()
+
+
+@dataclass
+class OrchestratorContext:
+    """Mutable state for one `run_sensors` invocation."""
+
+    working_dir: str
+    config_name: str | None
+    config: SensorsConfig
+    config_path: Path
+    ctl_path: Path
+    sock_path: Path
+    state_manager: StateManager
+    events: DisplayEvents
+    control_server: asyncio.Server
+    display: DisplayManager | None = None
+    display_task: asyncio.Task[None] | None = None
+    runners: list[GenericRunner] = field(default_factory=list)
+    runner_tasks: list[asyncio.Task] = field(default_factory=list)
+
+
+@dataclass
+class RunnerBatch:
+    """One iteration of started runners and orchestrator wait tasks."""
+
+    runners: list[GenericRunner]
+    runner_tasks: list[asyncio.Task]
+    rerun_events: dict[str, asyncio.Event]
+    clear_wait: asyncio.Task[None]
+    shutdown_wait: asyncio.Task[None]
+    snapshot_wait: asyncio.Task[None]
+
+
 def _runner_factory(
     config: RunnerConfig,
     state_manager: StateManager,
@@ -64,6 +106,23 @@ def _runner_factory(
         return None
 
 
+def _add_runner_from_config(
+    runner_config: RunnerConfig,
+    state_manager: StateManager,
+    runners: list[GenericRunner],
+    rerun_events: dict[str, asyncio.Event],
+) -> None:
+    """Append one background runner and optional rerun event from config."""
+    needs_rerun = runner_config.mode in (RunnerMode.INTERVAL, RunnerMode.TRIGGERED)
+    ev: asyncio.Event | None = asyncio.Event() if needs_rerun else None
+    runner = _runner_factory(runner_config, state_manager, rerun_event=ev)
+    if runner is None:
+        return
+    runners.append(runner)
+    if ev is not None:
+        rerun_events[runner_config.name] = ev
+
+
 def _build_runners(
     config: SensorsConfig,
     state_manager: StateManager,
@@ -76,14 +135,30 @@ def _build_runners(
     runners: list[GenericRunner] = []
     rerun_events: dict[str, asyncio.Event] = {}
     for runner_config in config.runners:
-        needs_rerun = runner_config.mode in (RunnerMode.INTERVAL, RunnerMode.TRIGGERED)
-        ev: asyncio.Event | None = asyncio.Event() if needs_rerun else None
-        r = _runner_factory(runner_config, state_manager, rerun_event=ev)
-        if r is not None:
-            runners.append(r)
-            if ev is not None:
-                rerun_events[runner_config.name] = ev
+        _add_runner_from_config(runner_config, state_manager, runners, rerun_events)
     return runners, rerun_events
+
+
+def _wire_runner_batch(
+    runner_tasks: list[asyncio.Task],
+    events: DisplayEvents,
+) -> RunnerBatch:
+    """Build wait tasks for an orchestrator loop iteration (tests and production)."""
+    return RunnerBatch(
+        runners=[],
+        runner_tasks=runner_tasks,
+        rerun_events={},
+        clear_wait=asyncio.create_task(events.clear.wait()),
+        shutdown_wait=asyncio.create_task(events.shutdown.wait()),
+        snapshot_wait=asyncio.create_task(events.snapshot.wait()),
+    )
+
+
+def _cancel_batch_waits(batch: RunnerBatch) -> None:
+    """Cancel orchestrator wait tasks; ignore if already done."""
+    for wait in (batch.clear_wait, batch.shutdown_wait, batch.snapshot_wait):
+        if not wait.done():
+            wait.cancel()
 
 
 async def _stop_runners(runners: list[GenericRunner], runner_tasks: list[asyncio.Task]) -> None:
@@ -116,19 +191,14 @@ def _cleanup_stale_control(control_path: Path, socket_path: Path) -> None:
             remove_control_artifacts(control_path, socket_path)
 
 
-async def run_sensors(
+async def _setup_orchestrator(
     working_dir: str,
-    config_name: str | None = None,
+    config_name: str | None,
     *,
-    display_mode: DisplayMode = "inline",
-) -> None:
-    """Load config, start control socket, start runners, run until shutdown."""
-    try:
-        config = await load_config(working_dir, config_name)
-    except ConfigLoadError as e:
-        print(f"Config error: {e}")
-        raise
-
+    display_mode: DisplayMode,
+) -> OrchestratorContext:
+    """Load config, control plane, signals, and optional inline display."""
+    config = await load_config(working_dir, config_name)
     config_path = resolve_config_path(working_dir, config_name)
     state_file = state_path_for_config(config_path)
     ctl_path = control_path_for_config(config_path)
@@ -164,107 +234,206 @@ async def run_sensors(
         )
         display_task = asyncio.create_task(display.run())
 
-    runners: list[GenericRunner] = []
-    runner_tasks: list[asyncio.Task] = []
-    rerun_events: dict[str, asyncio.Event] = {}
+    return OrchestratorContext(
+        working_dir=working_dir,
+        config_name=config_name,
+        config=config,
+        config_path=config_path,
+        ctl_path=ctl_path,
+        sock_path=sock_path,
+        state_manager=state_manager,
+        events=events,
+        control_server=control_server,
+        display=display,
+        display_task=display_task,
+    )
+
+
+async def _start_runner_batch(ctx: OrchestratorContext) -> RunnerBatch | None:
+    """Build runners, wire display, and start runner tasks. None if no enabled runners."""
+    runners, rerun_events = _build_runners(ctx.config, ctx.state_manager)
+    ctx.events.rerun_events = rerun_events
+    if ctx.display is not None:
+        ctx.display.set_runner_configs(
+            ctx.config.runners,
+            active_runner_names={r.config.name for r in runners},
+            rerun_events=rerun_events,
+        )
+    if not runners:
+        return None
+
+    runner_tasks = [asyncio.create_task(r.start()) for r in runners]
+    batch = _wire_runner_batch(runner_tasks, ctx.events)
+    batch.runners = runners
+    batch.rerun_events = rerun_events
+    return batch
+
+
+def _cancel_wait_if_pending(wait: asyncio.Task) -> None:
+    if not wait.done():
+        wait.cancel()
+
+
+def _cancel_waits_after_snapshot(batch: RunnerBatch) -> None:
+    _cancel_wait_if_pending(batch.clear_wait)
+    _cancel_wait_if_pending(batch.shutdown_wait)
+
+
+def _cancel_waits_after_shutdown(batch: RunnerBatch, done: set[asyncio.Task]) -> None:
+    _cancel_wait_if_pending(batch.snapshot_wait)
+    if batch.clear_wait in done and not batch.clear_wait.cancelled():
+        batch.clear_wait.cancel()
+
+
+def _classify_orchestrator_event(
+    batch: RunnerBatch,
+    done: set[asyncio.Task],
+) -> OrchestratorEventType:
+    if batch.snapshot_wait in done:
+        _cancel_waits_after_snapshot(batch)
+        return OrchestratorEventType.SNAPSHOT
+    if batch.shutdown_wait in done:
+        _cancel_waits_after_shutdown(batch, done)
+        return OrchestratorEventType.SHUTDOWN
+    if batch.clear_wait in done:
+        return OrchestratorEventType.CLEAR
+    return OrchestratorEventType.RUNNER_EXIT
+
+
+async def _wait_for_orchestrator_event(
+    batch: RunnerBatch,
+) -> tuple[OrchestratorEventType, set[asyncio.Task]]:
+    """Wait until snapshot, shutdown, clear, or a runner task completes."""
+    wait_on: list[asyncio.Task] = (
+        batch.runner_tasks
+        + [batch.clear_wait, batch.shutdown_wait, batch.snapshot_wait]
+    )
+    done, _ = await asyncio.wait(
+        wait_on,
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    return _classify_orchestrator_event(batch, done), done
+
+
+async def _on_snapshot(ctx: OrchestratorContext, batch: RunnerBatch) -> None:
+    ctx.events.snapshot.clear()
+    await ctx.state_manager.save_snapshot()
+    now = datetime.now().strftime("%H:%M:%S")
+    if ctx.display is not None:
+        ctx.display._snapshot_status = f"Snapshot saved at {now}"
+
+
+async def _on_clear(ctx: OrchestratorContext, batch: RunnerBatch) -> bool:
+    """Handle clear: stop runners, reset state, reload config. False = exit loop."""
+    ctx.events.clear.clear()
+    await _stop_runners(batch.runners, batch.runner_tasks)
+    await ctx.state_manager.reset()
+    try:
+        ctx.config = await load_config(ctx.working_dir, ctx.config_name)
+    except ConfigLoadError as e:
+        print(f"Config reload error: {e}")
+        logger.error("Config reload failed, shutting down: %s", e)
+        return False
+    if ctx.display is not None:
+        ctx.display._clear_status = None
+        ctx.display._snapshot_status = None
+    return True
+
+
+def _log_unexpected_runner_exits(
+    done: set[asyncio.Task],
+    runner_tasks: list[asyncio.Task],
+    runners: list[GenericRunner],
+) -> None:
+    for task in done:
+        if task not in runner_tasks:
+            continue
+        exc = task.exception() if not task.cancelled() else None
+        runner_name = getattr(
+            runners[runner_tasks.index(task)].config, "name", "unknown"
+        )
+        if exc is not None:
+            logger.error(
+                "Runner '%s' exited unexpectedly with an exception -- halting sensors",
+                runner_name,
+                exc_info=exc,
+            )
+        else:
+            logger.error(
+                "Runner '%s' exited unexpectedly (no exception) -- halting sensors",
+                runner_name,
+            )
+
+
+async def _on_runner_exit(
+    ctx: OrchestratorContext,
+    batch: RunnerBatch,
+    done: set[asyncio.Task],
+) -> None:
+    _log_unexpected_runner_exits(done, batch.runner_tasks, batch.runners)
+    await _stop_runners(batch.runners, batch.runner_tasks)
+
+
+async def _teardown_orchestrator(ctx: OrchestratorContext) -> None:
+    if ctx.runners and ctx.runner_tasks:
+        await _stop_runners(ctx.runners, ctx.runner_tasks)
+
+    if ctx.display is not None:
+        ctx.display.stop()
+    if ctx.display_task is not None and not ctx.display_task.done():
+        ctx.display_task.cancel()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                asyncio.gather(ctx.display_task, return_exceptions=True),
+                timeout=2.0
+            )
+
+    ctx.control_server.close()
+    await ctx.control_server.wait_closed()
+    remove_control_artifacts(ctx.ctl_path, ctx.sock_path)
+
+
+async def run_sensors(
+    working_dir: str,
+    config_name: str | None = None,
+    *,
+    display_mode: DisplayMode = "inline",
+) -> None:
+    """Load config, start control socket, start runners, run until shutdown."""
+    try:
+        ctx = await _setup_orchestrator(
+            working_dir, config_name, display_mode=display_mode
+        )
+    except ConfigLoadError as e:
+        print(f"Config error: {e}")
+        raise
 
     try:
         while True:
-            runners, rerun_events = _build_runners(config, state_manager)
-            events.rerun_events = rerun_events
-            if display is not None:
-                display.set_runner_configs(
-                    config.runners,
-                    active_runner_names={r.config.name for r in runners},
-                    rerun_events=rerun_events,
-                )
-            if not runners:
+            batch = await _start_runner_batch(ctx)
+            if batch is None:
                 print("No enabled runners. Exiting.")
                 break
 
-            runner_tasks = [asyncio.create_task(r.start()) for r in runners]
-            clear_wait = asyncio.create_task(events.clear.wait())
-            shutdown_wait = asyncio.create_task(events.shutdown.wait())
-            snapshot_wait = asyncio.create_task(events.snapshot.wait())
+            ctx.runners = batch.runners
+            ctx.runner_tasks = batch.runner_tasks
 
-            wait_on: list[asyncio.Task] = (
-                runner_tasks + [clear_wait, shutdown_wait, snapshot_wait]
-            )
+            event, done = await _wait_for_orchestrator_event(batch)
 
-            done, _ = await asyncio.wait(
-                wait_on,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            if snapshot_wait in done:
-                events.snapshot.clear()
-                await state_manager.save_snapshot()
-                now = datetime.now().strftime("%H:%M:%S")
-                if display is not None:
-                    display._snapshot_status = f"Snapshot saved at {now}"
-                clear_wait.cancel()
-                shutdown_wait.cancel()
+            if event == OrchestratorEventType.SNAPSHOT:
+                await _on_snapshot(ctx, batch)
                 continue
 
-            if shutdown_wait in done:
-                snapshot_wait.cancel()
-                if clear_wait in done and not clear_wait.cancelled():
-                    clear_wait.cancel()
+            if event == OrchestratorEventType.SHUTDOWN:
                 print("\nShutting down sensors...")
                 break
 
-            if clear_wait in done:
-                events.clear.clear()
-                await _stop_runners(runners, runner_tasks)
-                await state_manager.reset()
-                try:
-                    config = await load_config(working_dir, config_name)
-                except ConfigLoadError as e:
-                    print(f"Config reload error: {e}")
-                    logger.error("Config reload failed, shutting down: %s", e)
-                    break
-                if display is not None:
-                    display._clear_status = None
-                    display._snapshot_status = None
-                continue
+            if event == OrchestratorEventType.CLEAR:
+                if await _on_clear(ctx, batch):
+                    continue
+                break
 
-            # One or more runner tasks exited unexpectedly (not via shutdown/clear).
-            # Log which ones finished and any exceptions they raised.
-            for task in done:
-                if task in runner_tasks:
-                    exc = task.exception() if not task.cancelled() else None
-                    runner_name = getattr(
-                        runners[runner_tasks.index(task)].config, "name", "unknown"
-                    )
-                    if exc is not None:
-                        logger.error(
-                            "Runner '%s' exited unexpectedly with an exception -- "
-                            "halting sensors",
-                            runner_name,
-                            exc_info=exc,
-                        )
-                    else:
-                        logger.error(
-                            "Runner '%s' exited unexpectedly (no exception) -- "
-                            "halting sensors",
-                            runner_name,
-                        )
-            await _stop_runners(runners, runner_tasks)
+            await _on_runner_exit(ctx, batch, done)
             break
     finally:
-        if runners and runner_tasks:
-            await _stop_runners(runners, runner_tasks)
-
-        if display is not None:
-            display.stop()
-        if display_task is not None and not display_task.done():
-            display_task.cancel()
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(
-                    asyncio.gather(display_task, return_exceptions=True),
-                    timeout=2.0
-                )
-
-        control_server.close()
-        await control_server.wait_closed()
-        remove_control_artifacts(ctl_path, sock_path)
+        await _teardown_orchestrator(ctx)
