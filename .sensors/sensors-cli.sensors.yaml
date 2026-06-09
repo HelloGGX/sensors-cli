@@ -1,5 +1,5 @@
 version: 1
-prompt: "Follow scouting rule: if sensors are reporting issues you didn't cause with a change, consider to leave the code better than you found it, if it's a small change."
+prompt: "If sensors report issues you didn't introduce, fix them anyway unless the fix is risky or large. Do not skip pre-existing issues."
 
 runners:
 
@@ -31,9 +31,9 @@ runners:
     command: python ./.sensors/maintainability/ruff_guidance.py -- --select S check sensors/
     interval: 10000
   
-  # - name: imports
-  #   parser: import_linter
-  #   enabled: true
-  #   mode: interval
-  #   command: uv run lint-imports
-  #   interval: 26000
+  - name: imports
+    parser: import_linter
+    enabled: true
+    mode: interval
+    command: uv run lint-imports
+    interval: 26000
