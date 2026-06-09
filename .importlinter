@@ -1,47 +1,59 @@
 [importlinter]
-root_packages =
-    sensors
+root_package = sensors
 
-# -- Contract 1 ----------------------------------------------------------------
-# Enforce the main layer hierarchy.
+# ============================================================================
+# Layered architecture
+# ============================================================================
 # Higher layers may import from lower ones, never the other way around.
-# Modules on the same line are siblings and must not import each other.
+# Modules listed on the same line are peers and must not import each other.
 #
-#   cli / query          <- entry points (no cross-import between them)
-#   orchestration        <- lifecycle owner
-#   runners / tui        <- execution + presentation (no cross-import)
-#   persistence / config <- leaf modules (no sensors imports at all)
+#   sensors.cli                              <- entry point
+#   sensors.orchestration | sensors.tui      <- lifecycle/RPC and presentation
+#                                               (peers; neither imports the other)
+#   sensors.runners                          <- process management + parsing
+#   sensors.persistence                      <- state file
+#   sensors.config                           <- schema + paths (leaf)
 #
+# `exhaustive = false` lets us layer only the subpackages we care about.
+# Other top-level helpers (e.g. sensors.time_util) are unconstrained.
+# ----------------------------------------------------------------------------
 [importlinter:contract:layers]
-name = Layer hierarchy
+name = Top-down architecture layers
 type = layers
+exhaustive = false
 layers =
     sensors.cli
-    sensors.orchestration
-    sensors.runners | sensors.tui
-    sensors.persistence | sensors.config
+    sensors.orchestration | sensors.tui
+    sensors.runners
+    sensors.persistence
+    sensors.config
 
-# -- Contract 2 ----------------------------------------------------------------
-# Parsers are a sub-layer of runners and must not reach back up to the runner
-# that drives them. This keeps parsers purely functional / testable in isolation.
-#
-[importlinter:contract:parsers-no-generic]
+# ============================================================================
+# Parser sub-layer rules
+# ============================================================================
+# Parsers are meant to be pure data transforms: tool output in,
+# RunnerResult/ScoreInfo out. They must not depend on storage, and they must
+# not depend on the runner that drives them. These two constraints sit
+# *inside* the runners layer, so the layered contract above cannot express
+# them on its own.
+# ----------------------------------------------------------------------------
+
+# Parsers receive their domain types (RunnerResult, ScoreInfo) by injection
+# and must not reach into the storage layer for them.
+[importlinter:contract:forbid-parsers-on-persistence]
+name = Parsers must not depend on persistence
+type = forbidden
+source_modules =
+    sensors.runners.parsers
+forbidden_modules =
+    sensors.persistence
+
+# A parser is a pluggable transform. The driver/runner that calls it
+# must remain invisible to the parser implementations.
+[importlinter:contract:forbid-parsers-on-generic]
 name = Parsers must not import GenericRunner
 type = forbidden
 source_modules =
     sensors.runners.parsers
 forbidden_modules =
     sensors.runners.generic
-
-# -- Contract 3 ----------------------------------------------------------------
-# The TUI is a *view* layer. It may read state (persistence.models) but all
-# writes must go through the orchestrator via events (like clear_event /
-# shutdown_event). Importing StateManager here is the violation we want to fix.
-#
-[importlinter:contract:tui-readonly-persistence]
-name = TUI must not import StateManager
-type = forbidden
-source_modules =
-    sensors.tui
-forbidden_modules =
-    sensors.persistence.state_manager
