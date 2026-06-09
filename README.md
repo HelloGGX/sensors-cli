@@ -145,9 +145,78 @@ Optional **`workingDir`** on a runner: relative path from the project root (e.g.
 - **Watch** — long-lived tool output (e.g. Vitest watch).
 - **Interval** — run a command every `interval` milliseconds.
 
-## State file shape
+## Parsers
 
-State is JSON. Per-runner entries include `status`, `formatted` (terminal / LLM-oriented strings), optional **`score`**, and **`snapshot`** at the top level when a baseline was saved. Exact fields are defined in `sensors/persistence/models.py`.
+The project comes with a bunch of output parsers for common tools, like `eslint` or `ruff`. If you want to use a tool as a sensor that is not yet supported, you either have to add a new parser to the code (and reinstall the CLI), or you can use the default parser.
+
+### Adding a new parser
+
+Add a **parser** under `runners/parsers/` and register it in `runners/parsers/__init__.py`. The generic runner handles process lifecycle; see [`.claude/skills/_new-runner-type/SKILL.md`](/.claude/skills/_new-runner-type/SKILL.md) in this repo for a guided template.
+
+## Default parser: Expected output format
+
+Use `parser: default` in your runner config to connect any tool that can emit a JSON object in the specified schema. You have to build a script for your tool that turns the tool's output into this schema, and use that script in your sensor configuration.
+
+### Schema
+
+```json
+{
+  "violations": [
+    {
+      "message": "Unused variable 'x'",
+      "severity": "error",
+      "file": "src/foo.py",
+      "line": 42,
+      "rule": "F841"
+    }
+  ],
+  "score": {
+    "value": 1,
+    "direction": "less"
+  },
+  "success": false,
+  "summary": "1 issue found"
+}
+```
+
+All fields are optional, in particular `success` and `summary`. The parser derives missing values as follows:
+
+| Field | If absent or null |
+|---|---|
+| `violations` | treated as `[]` |
+| `success` | `true` when `violations` is empty, `false` otherwise |
+| `summary` | `"N issue(s)"` / `"No issues"` derived from violation count |
+| `score.value` | `len(violations)` |
+| `score.direction` | `"less"` (lower is better) |
+
+If `success`, `summary`, or `score` are present, those values are used as-is. This lets tools signal pass/fail independently of the violation list -- for example a coverage tool that reports a single score rather than individual violations.
+
+
+### Example config
+
+```yaml
+runners:
+  - name: my-custom-check
+    parser: default
+    enabled: true
+    mode: interval
+    command: some-tool | ./scripts/to-parser-default-format.sh
+    interval: 10000
+```
+
+### Minimal valid output
+
+A tool that only reports a count without individual violations:
+
+```json
+{"success": false, "summary": "Coverage 72% (threshold 80%)", "score": {"value": 72, "direction": "more"}}
+```
+
+A tool with no issues:
+
+```json
+{"violations": []}
+```
 
 ## Testing
 
@@ -155,23 +224,3 @@ State is JSON. Per-runner entries include `status`, `formatted` (terminal / LLM-
 uv run pytest tests/ -v
 ```
 
-## Development layout
-
-```text
-sensors/
-├── sensors/
-│   ├── config/              # YAML loading, schema
-│   ├── orchestration/       # orchestrator.py, control_server.py
-│   ├── runners/
-│   │   ├── generic.py
-│   │   └── parsers/         # ESLint, Vitest, pytest, ruff, git_diff, …
-│   ├── persistence/         # StateManager, models
-│   ├── tui/display.py       # Rich UI
-│   └── cli.py               # CLI entry point
-├── tests/
-└── pyproject.toml
-```
-
-## Adding a new parser
-
-Add a **parser** under `runners/parsers/` and register it in `runners/parsers/__init__.py`. The generic runner handles process lifecycle; see [`.claude/skills/_new-runner-type/SKILL.md`](/.claude/skills/_new-runner-type/SKILL.md) in this repo for a guided template.

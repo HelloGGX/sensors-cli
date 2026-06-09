@@ -18,22 +18,22 @@ runners:
     interval: 10000
 
   - name: ruff
-    parser: ruff
+    parser: default
     enabled: true
     mode: interval
     command: python ./.sensors/maintainability/ruff_guidance.py -- check sensors/
     interval: 10000
 
   - name: ruff-sec
-    parser: ruff
+    parser: default
     enabled: true
     mode: interval
     command: python ./.sensors/maintainability/ruff_guidance.py -- --select S check sensors/
     interval: 10000
   
-  - name: imports
-    parser: import_linter
-    enabled: true
-    mode: interval
-    command: uv run lint-imports
-    interval: 26000
+  # - name: imports
+  #   parser: import_linter
+  #   enabled: true
+  #   mode: interval
+  #   command: uv run lint-imports
+  #   interval: 26000

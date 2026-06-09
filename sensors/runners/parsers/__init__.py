@@ -9,6 +9,7 @@ the generic runner. Each parser is responsible for:
 
 
 from .base import OutputParser
+from .default import DefaultParser
 from .depcruise import DepcruiseParser
 from .eslint import ESLintParser
 from .git_diff import GitDiffParser
@@ -63,6 +64,7 @@ class ParserRegistry:
 
 
 # Auto-register parsers on import
+ParserRegistry.register("default", DefaultParser)
 ParserRegistry.register("depcruise", DepcruiseParser)
 ParserRegistry.register("import_linter", ImportLinterParser)
 ParserRegistry.register("eslint", ESLintParser)
@@ -79,7 +81,7 @@ ParserRegistry.register("vitest_cov", VitestCovParser)
 
 
 __all__ = [
-    "OutputParser", "DepcruiseParser", "ESLintParser", "GitDiffParser",
+    "OutputParser", "DefaultParser", "DepcruiseParser", "ESLintParser", "GitDiffParser",
     "ImportLinterParser", "StrykerParser", "StylelintParser", "TscParser", "VitestParser", "VitestCovParser",
     "PytestParser", "PytestCovParser", "RuffParser", "SemgrepParser",
     "ParserRegistry",

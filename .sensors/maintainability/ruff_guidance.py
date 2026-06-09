@@ -188,6 +188,29 @@ def build_json_output(
     ]
 
 
+def build_default_output(diagnostics: list[dict[str, Any]]) -> dict[str, Any]:
+    """Convert ruff diagnostics to the sensors default parser JSON format."""
+    cwd = Path.cwd()
+    violations = []
+    for d in diagnostics:
+        if not isinstance(d, dict) or "code" not in d:
+            continue
+        loc = d.get("location") or {}
+        filename = d.get("filename", "")
+        try:
+            file_str = str(Path(filename).relative_to(cwd))
+        except ValueError:
+            file_str = filename
+        violations.append({
+            "message": str(d.get("message", "")),
+            "severity": "error",
+            "file": file_str,
+            "line": int(loc.get("row", 0)),
+            "rule": str(d.get("code", "")),
+        })
+    return {"violations": violations}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run ruff check with JSON output enriched by custom rule guidance.",
@@ -196,6 +219,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--ruff",
         metavar="CMD",
         help="Ruff executable or 'uv' style prefix (default: auto-detect PATH, .venv, uv run)",
+    )
+    parser.add_argument(
+        "--sensors-format",
+        choices=["ruff", "default"],
+        default="default",
+        dest="sensors_format",
+        help="Output format: 'default' (sensors default parser format, default) or 'ruff' (ruff native JSON array)",
     )
     parser.add_argument(
         "ruff_args",
@@ -217,8 +247,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except FileNotFoundError as exc:
         print(exc, file=sys.stderr)
         return 2
-    output = build_json_output(diagnostics, guidance_by_code)
-    print(json.dumps(output, indent=2))
+
+    if args.sensors_format == "default":
+        print(json.dumps(build_default_output(diagnostics)))
+    else:
+        output = build_json_output(diagnostics, guidance_by_code)
+        print(json.dumps(output, indent=2))
     return exit_code
 
 
