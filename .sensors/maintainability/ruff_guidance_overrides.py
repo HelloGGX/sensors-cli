@@ -1,6 +1,6 @@
 """Custom agent guidance for selected Ruff rule codes.
 
-Loaded by `sensors.tools.ruff_guidance` (stdlib importlib, no extra deps).
+Loaded by `ruff_guidance.py` (stdlib importlib, no extra deps).
 Keys must match the `code` field from `ruff check --output-format=json`.
 """
 
