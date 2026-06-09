@@ -9,7 +9,7 @@ from datetime import datetime
 from html import escape
 from typing import Any
 
-from sensors.persistence.models import RunnerResult, ScoreInfo
+from sensors.config import RunnerResult, ScoreInfo
 
 from .base import OutputParser
 
@@ -42,7 +42,6 @@ def _find_json_end(output: str, start: int) -> int:
 
 def _extract_json(output: str) -> dict[str, Any]:
     """Find and parse the first complete JSON object in output."""
-    unused_variable = "this will trigger F841"
     start = output.find("{")
     if start == -1:
         raise ValueError("No JSON object found in output")

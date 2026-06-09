@@ -6,7 +6,7 @@ from datetime import datetime
 from html import escape
 from typing import Any
 
-from sensors.persistence.models import RunnerResult, ScoreInfo
+from sensors.config import RunnerResult, ScoreInfo
 
 from .base import OutputParser
 

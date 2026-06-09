@@ -167,7 +167,7 @@ def test_format_details_success():
     parser = PytestParser()
     from datetime import datetime
 
-    from sensors.persistence.models import RunnerResult
+    from sensors.config import RunnerResult
 
     result = RunnerResult(
         timestamp=datetime.utcnow(),
@@ -190,7 +190,7 @@ def test_format_details_with_failures():
     parser = PytestParser()
     from datetime import datetime
 
-    from sensors.persistence.models import RunnerResult
+    from sensors.config import RunnerResult
 
     result = RunnerResult(
         timestamp=datetime.utcnow(),
@@ -215,7 +215,7 @@ def test_format_failures_success():
     parser = PytestParser()
     from datetime import datetime
 
-    from sensors.persistence.models import RunnerResult
+    from sensors.config import RunnerResult
 
     result = RunnerResult(
         timestamp=datetime.utcnow(),
@@ -236,7 +236,7 @@ def test_format_failures_with_details():
     parser = PytestParser()
     from datetime import datetime
 
-    from sensors.persistence.models import RunnerResult
+    from sensors.config import RunnerResult
 
     result = RunnerResult(
         timestamp=datetime.utcnow(),
@@ -272,7 +272,7 @@ def test_format_failures_no_details():
     parser = PytestParser()
     from datetime import datetime
 
-    from sensors.persistence.models import RunnerResult
+    from sensors.config import RunnerResult
 
     result = RunnerResult(
         timestamp=datetime.utcnow(),
@@ -295,7 +295,7 @@ def test_calculate_score_with_failures_and_errors():
     parser = PytestParser()
     from datetime import datetime
 
-    from sensors.persistence.models import RunnerResult
+    from sensors.config import RunnerResult
 
     result = RunnerResult(
         timestamp=datetime.utcnow(),
@@ -317,7 +317,7 @@ def test_calculate_score_all_passed():
     parser = PytestParser()
     from datetime import datetime
 
-    from sensors.persistence.models import RunnerResult
+    from sensors.config import RunnerResult
 
     result = RunnerResult(
         timestamp=datetime.utcnow(),

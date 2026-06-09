@@ -14,7 +14,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from sensors.persistence.models import RunnerResult, ScoreInfo
+from sensors.config import RunnerResult, ScoreInfo
 
 from .base import OutputParser
 

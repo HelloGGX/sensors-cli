@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sensors.persistence.models import RunnerResult
+from sensors.config import RunnerResult
 from sensors.runners.parsers.stryker import StrykerParser, _pct
 
 

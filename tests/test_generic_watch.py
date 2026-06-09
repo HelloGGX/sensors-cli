@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sensors.config.schema import RunnerConfig, RunnerMode
-from sensors.persistence.models import RunnerResult, ScoreInfo
+from sensors.config import RunnerResult, ScoreInfo
 from sensors.persistence.state_manager import StateManager
 from sensors.runners.generic import GenericRunner
 from sensors.runners.parsers.base import OutputParser

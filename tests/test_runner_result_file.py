@@ -8,7 +8,7 @@ import pytest
 from sensors.cli import _runner_description
 from sensors.config.loader import ConfigLoadError, load_config
 from sensors.config.schema import RunnerConfig, RunnerMode
-from sensors.persistence.models import RunnerResult
+from sensors.config import RunnerResult
 from sensors.runners.generic import GenericRunner
 from sensors.runners.parsers.eslint import ESLintParser
 

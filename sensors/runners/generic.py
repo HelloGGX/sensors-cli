@@ -14,8 +14,9 @@ import shlex
 from datetime import datetime
 from pathlib import Path
 
+from sensors.config import FormattedOutput, RunnerResult, ScoreInfo
 from sensors.config.schema import RunnerConfig, RunnerMode
-from sensors.persistence.models import FormattedOutput, RunnerResult, RunnerState, ScoreInfo
+from sensors.persistence.models import RunnerState
 from sensors.persistence.state_manager import StateManager
 from sensors.runners.parsers.base import OutputParser
 

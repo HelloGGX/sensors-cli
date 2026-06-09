@@ -24,7 +24,7 @@ import json
 from datetime import datetime
 from typing import Any, Final
 
-from sensors.persistence.models import RunnerResult, ScoreInfo
+from sensors.config import RunnerResult, ScoreInfo
 
 from .base import OutputParser
 

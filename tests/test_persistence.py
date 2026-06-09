@@ -14,7 +14,7 @@ from sensors.persistence import (
     SensorsState,
     StateManager,
 )
-from sensors.persistence.models import FormattedOutput, ScoreInfo
+from sensors.config import FormattedOutput, ScoreInfo
 
 
 @pytest.mark.asyncio

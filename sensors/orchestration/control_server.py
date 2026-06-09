@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from sensors.tui.display import DisplayEvents
+from sensors.events import DisplayEvents
 
 
 async def handle_control_connection(

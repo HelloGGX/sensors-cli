@@ -19,7 +19,7 @@ from sensors.orchestration.orchestrator import (
     _wire_runner_batch,
 )
 from sensors.persistence.state_manager import StateManager
-from sensors.tui.display import DisplayEvents
+from sensors.events import DisplayEvents
 
 
 def _minimal_config(*runners: RunnerConfig) -> SensorsConfig:

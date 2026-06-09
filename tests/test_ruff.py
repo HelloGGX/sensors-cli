@@ -5,7 +5,7 @@ from datetime import datetime
 
 import pytest
 
-from sensors.persistence.models import RunnerResult
+from sensors.config import RunnerResult
 from sensors.runners.generic import GenericRunner
 from sensors.runners.parsers.ruff import GUIDANCE_JSON_KEY, RuffParser
 

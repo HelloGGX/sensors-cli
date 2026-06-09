@@ -19,7 +19,7 @@ HTML methods should use these CSS classes for consistent styling:
 
 from abc import ABC, abstractmethod
 
-from sensors.persistence.models import RunnerResult, ScoreInfo
+from sensors.config import RunnerResult, ScoreInfo
 
 
 class OutputParser(ABC):

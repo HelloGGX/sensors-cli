@@ -25,6 +25,7 @@ from sensors.config.loader import (
     state_path_for_config,
 )
 from sensors.config.schema import RunnerConfig, SensorsConfig
+from sensors.events import DisplayEvents
 from sensors.orchestration.control_server import (
     control_state,
     is_sensors_running,
@@ -41,7 +42,7 @@ from sensors.persistence.models import (
     Snapshot,
 )
 from sensors.persistence.state_manager import StateManager
-from sensors.tui.display import DisplayEvents, DisplayManager
+from sensors.tui.display import DisplayManager
 
 app = typer.Typer(help="Sensors: continuous code quality monitoring for coding agents")
 _state_managers: dict[tuple[str, str | None], StateManager] = {}
@@ -400,7 +401,7 @@ def start_command(
     wd = str(Path(working_dir).resolve())
     if worker:
         try:
-            asyncio.run(run_sensors(wd, config, display_mode="none"))
+            asyncio.run(run_sensors(wd, config))
         except ConfigLoadError as e:
             typer.echo(f"Error: {e}", err=True)
             raise typer.Exit(code=2) from None

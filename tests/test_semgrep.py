@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pytest
 
-from sensors.persistence.models import RunnerResult
+from sensors.config import RunnerResult
 from sensors.runners.parsers import SemgrepParser
 
 SEMGREP_FINDINGS_JSON = json.dumps({

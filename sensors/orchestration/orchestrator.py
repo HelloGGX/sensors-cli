@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import signal
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
-from typing import Literal
 
 from sensors.config.loader import (
     ConfigLoadError,
@@ -24,6 +21,7 @@ from sensors.config.loader import (
     state_path_for_config,
 )
 from sensors.config.schema import RunnerConfig, RunnerMode, SensorsConfig
+from sensors.events import DisplayEvents
 from sensors.orchestration.control_server import (
     control_state,
     ensure_no_live_sensors,
@@ -34,11 +32,8 @@ from sensors.orchestration.control_server import (
 from sensors.persistence.state_manager import StateManager
 from sensors.runners.generic import GenericRunner
 from sensors.runners.parsers import ParserRegistry
-from sensors.tui.display import DisplayEvents, DisplayManager
 
 logger = logging.getLogger(__name__)
-
-DisplayMode = Literal["none", "inline"]
 
 
 class OrchestratorEventType(Enum):
@@ -62,9 +57,7 @@ class OrchestratorContext:
     sock_path: Path
     state_manager: StateManager
     events: DisplayEvents
-    control_server: asyncio.Server
-    display: DisplayManager | None = None
-    display_task: asyncio.Task[None] | None = None
+    control_server: asyncio.AbstractServer
     runners: list[GenericRunner] = field(default_factory=list)
     runner_tasks: list[asyncio.Task] = field(default_factory=list)
 
@@ -194,10 +187,8 @@ def _cleanup_stale_control(control_path: Path, socket_path: Path) -> None:
 async def _setup_orchestrator(
     working_dir: str,
     config_name: str | None,
-    *,
-    display_mode: DisplayMode,
 ) -> OrchestratorContext:
-    """Load config, control plane, signals, and optional inline display."""
+    """Load config, control plane, and signals."""
     config = await load_config(working_dir, config_name)
     config_path = resolve_config_path(working_dir, config_name)
     state_file = state_path_for_config(config_path)
@@ -222,18 +213,6 @@ async def _setup_orchestrator(
     control_server = await start_control_server(sock_path, events)
     write_control_file(ctl_path, sock_path, os.getpid(), config_path.name, working_dir=working_dir)
 
-    display: DisplayManager | None = None
-    display_task: asyncio.Task[None] | None = None
-    if display_mode == "inline":
-        display = DisplayManager(
-            state_manager,
-            runner_configs=config.runners,
-            update_interval=1.0,
-            events=events,
-            attach=False,
-        )
-        display_task = asyncio.create_task(display.run())
-
     return OrchestratorContext(
         working_dir=working_dir,
         config_name=config_name,
@@ -244,21 +223,13 @@ async def _setup_orchestrator(
         state_manager=state_manager,
         events=events,
         control_server=control_server,
-        display=display,
-        display_task=display_task,
     )
 
 
 async def _start_runner_batch(ctx: OrchestratorContext) -> RunnerBatch | None:
-    """Build runners, wire display, and start runner tasks. None if no enabled runners."""
+    """Build runners and start runner tasks. None if no enabled runners."""
     runners, rerun_events = _build_runners(ctx.config, ctx.state_manager)
     ctx.events.rerun_events = rerun_events
-    if ctx.display is not None:
-        ctx.display.set_runner_configs(
-            ctx.config.runners,
-            active_runner_names={r.config.name for r in runners},
-            rerun_events=rerun_events,
-        )
     if not runners:
         return None
 
@@ -318,9 +289,6 @@ async def _wait_for_orchestrator_event(
 async def _on_snapshot(ctx: OrchestratorContext, batch: RunnerBatch) -> None:
     ctx.events.snapshot.clear()
     await ctx.state_manager.save_snapshot()
-    now = datetime.now().strftime("%H:%M:%S")
-    if ctx.display is not None:
-        ctx.display._snapshot_status = f"Snapshot saved at {now}"
 
 
 async def _on_clear(ctx: OrchestratorContext, batch: RunnerBatch) -> bool:
@@ -334,9 +302,6 @@ async def _on_clear(ctx: OrchestratorContext, batch: RunnerBatch) -> bool:
         print(f"Config reload error: {e}")
         logger.error("Config reload failed, shutting down: %s", e)
         return False
-    if ctx.display is not None:
-        ctx.display._clear_status = None
-        ctx.display._snapshot_status = None
     return True
 
 
@@ -378,16 +343,6 @@ async def _teardown_orchestrator(ctx: OrchestratorContext) -> None:
     if ctx.runners and ctx.runner_tasks:
         await _stop_runners(ctx.runners, ctx.runner_tasks)
 
-    if ctx.display is not None:
-        ctx.display.stop()
-    if ctx.display_task is not None and not ctx.display_task.done():
-        ctx.display_task.cancel()
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(
-                asyncio.gather(ctx.display_task, return_exceptions=True),
-                timeout=2.0
-            )
-
     ctx.control_server.close()
     await ctx.control_server.wait_closed()
     remove_control_artifacts(ctx.ctl_path, ctx.sock_path)
@@ -396,14 +351,10 @@ async def _teardown_orchestrator(ctx: OrchestratorContext) -> None:
 async def run_sensors(
     working_dir: str,
     config_name: str | None = None,
-    *,
-    display_mode: DisplayMode = "inline",
 ) -> None:
     """Load config, start control socket, start runners, run until shutdown."""
     try:
-        ctx = await _setup_orchestrator(
-            working_dir, config_name, display_mode=display_mode
-        )
+        ctx = await _setup_orchestrator(working_dir, config_name)
     except ConfigLoadError as e:
         print(f"Config error: {e}")
         raise

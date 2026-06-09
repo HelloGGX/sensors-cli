@@ -7,12 +7,8 @@ from pathlib import Path
 import pytest
 
 from sensors.config.schema import RunnerConfig, RunnerMode
-from sensors.persistence.models import (
-    FormattedOutput,
-    RunnerResult,
-    RunnerState,
-    ScoreInfo,
-)
+from sensors.config import FormattedOutput, RunnerResult, ScoreInfo
+from sensors.persistence.models import RunnerState
 from sensors.persistence.state_manager import StateManager
 from sensors.runners.generic import GenericRunner
 from sensors.runners.parsers.base import OutputParser

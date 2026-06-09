@@ -3,7 +3,7 @@
 import re
 from datetime import datetime
 
-from sensors.persistence.models import RunnerResult, ScoreInfo
+from sensors.config import RunnerResult, ScoreInfo
 
 from .base import OutputParser
 

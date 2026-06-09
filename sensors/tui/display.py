@@ -8,7 +8,6 @@ import termios
 import tty
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 from datetime import datetime
 
 from rich.console import Console
@@ -16,6 +15,7 @@ from rich.live import Live
 from rich.table import Table
 
 from sensors.config.schema import RunnerConfig
+from sensors.events import DisplayEvents
 from sensors.persistence.models import RunnerState
 from sensors.persistence.state_manager import StateManager
 
@@ -32,18 +32,6 @@ def _raw_tty(fd: int) -> Iterator[None]:
         yield
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-
-@dataclass
-class DisplayEvents:
-    """Events used to signal actions from the display to the orchestrator."""
-
-    clear: asyncio.Event = field(default_factory=asyncio.Event)
-    shutdown: asyncio.Event = field(default_factory=asyncio.Event)
-    snapshot: asyncio.Event = field(default_factory=asyncio.Event)
-    #: Populated by orchestrator after runners are built; keyed by runner name.
-    #: Control server uses this to trigger remote re-runs without touching the main loop.
-    rerun_events: dict[str, asyncio.Event] = field(default_factory=dict)
 
 
 class DisplayManager:

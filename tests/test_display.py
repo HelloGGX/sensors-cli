@@ -11,9 +11,11 @@ import pytest
 from rich.console import Console
 
 from sensors.config.schema import RunnerConfig, RunnerMode
-from sensors.persistence.models import FormattedOutput, RunnerState
+from sensors.config import FormattedOutput
+from sensors.events import DisplayEvents
+from sensors.persistence.models import RunnerState
 from sensors.persistence.state_manager import StateManager
-from sensors.tui.display import DisplayEvents, DisplayManager
+from sensors.tui.display import DisplayManager
 
 
 @pytest.fixture
