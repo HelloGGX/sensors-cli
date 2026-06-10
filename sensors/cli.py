@@ -67,7 +67,38 @@ def _seconds_ago(dt, now):
     return f"{hours}h ago"
 
 
-def _runner_description(runner_cfg: RunnerConfig, runner_state: RunnerState | None = None) -> str:
+def _format_runner_dir(working_dir: str, workspace_root: str | None) -> str | None:
+    """Return a display string for a runner's working dir, or None if it should be omitted."""
+    if workspace_root is not None and working_dir == workspace_root:
+        return None
+    if workspace_root is not None:
+        try:
+            return str(Path(working_dir).relative_to(workspace_root))
+        except ValueError:
+            pass
+    return working_dir
+
+
+def _relativize_runner_configs(
+    runner_configs: dict[str, RunnerConfig],
+    workspace_root: str,
+) -> dict[str, RunnerConfig]:
+    """Return a copy of runner_configs with workingDir set to a display-friendly value."""
+    import copy
+
+    result = {}
+    for name, rc in runner_configs.items():
+        rc_copy = copy.copy(rc)
+        if rc_copy.workingDir:
+            rc_copy.workingDir = _format_runner_dir(rc_copy.workingDir, workspace_root)
+        result[name] = rc_copy
+    return result
+
+
+def _runner_description(
+    runner_cfg: RunnerConfig,
+    runner_state: RunnerState | None = None,
+) -> str:
     parts = [f"cmd: `{runner_cfg.command}`"]
     if runner_cfg.workingDir:
         parts.append(f"dir: {runner_cfg.workingDir}")
@@ -262,11 +293,24 @@ def _print_runner_result(
     print()
 
 
-async def _print_on_check_sections(on_check_configs: list[RunnerConfig]) -> None:
+async def _print_on_check_sections(
+    on_check_configs: list[RunnerConfig],
+    workspace_root: str | None = None,
+) -> None:
     for rc in on_check_configs:
         output = await _run_on_check_command(rc)
         print(f"{rc.name}: on_check")
-        print(f"  cmd: `{rc.command}`" + (f", dir: {rc.workingDir}" if rc.workingDir else ""))
+        dir_suffix = ""
+        if rc.workingDir and (workspace_root is None or rc.workingDir != workspace_root):
+            if workspace_root:
+                try:
+                    rel = Path(rc.workingDir).relative_to(workspace_root)
+                    dir_suffix = f", dir: {rel}"
+                except ValueError:
+                    dir_suffix = f", dir: {rc.workingDir}"
+            else:
+                dir_suffix = f", dir: {rc.workingDir}"
+        print(f"  cmd: `{rc.command}`" + dir_suffix)
         if rc.prompt:
             print(f"  prompt: {rc.prompt}")
         if output:
@@ -336,10 +380,12 @@ async def _run_check(working_dir: str, runner: str | None, config: str | None) -
     )
     await sm.append_check_history(history_entry)
 
+    workspace_root = str(Path(working_dir).resolve())
+    display_configs = _relativize_runner_configs(ctx.runner_configs, workspace_root)
     _print_check_header(ctx.state, ctx.sensors_config, ctx.now)
     for name, rs in ctx.state.runners.items():
-        _print_runner_result(name, rs, ctx.runner_configs, ctx.state, ctx.now)
-    await _print_on_check_sections(ctx.on_check_configs)
+        _print_runner_result(name, rs, display_configs, ctx.state, ctx.now)
+    await _print_on_check_sections(ctx.on_check_configs, workspace_root)
     return _check_exit_code(ctx.state)
 
 
