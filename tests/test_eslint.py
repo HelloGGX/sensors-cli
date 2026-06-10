@@ -133,6 +133,36 @@ async def test_parse_array_format_violation_fields():
 
 
 @pytest.mark.asyncio
+async def test_parse_violations_with_shortText():
+    """Custom eslint rules may include shortText for better guidance."""
+    eslint_with_shorttext = json.dumps({
+        "files": [
+            {
+                "filePath": "/app/src/index.ts",
+                "messages": [
+                    {
+                        "line": 19,
+                        "column": 3,
+                        "severity": 1,
+                        "ruleId": "no-console",
+                        "message": "Unexpected console statement.",
+                        "shortText": "Use `logger` from `server/logger.ts` instead of `console`",
+                    }
+                ],
+            }
+        ],
+        "summary": {"totalErrors": 0, "totalWarnings": 1, "triggeredRules": []},
+    })
+    parser = ESLintParser()
+    result = await parser.parse_output(eslint_with_shorttext)
+
+    assert len(result.output["violations"]) == 1
+    v = result.output["violations"][0]
+    assert v["shortText"] == "Use `logger` from `server/logger.ts` instead of `console`"
+    assert v["message"] == "Unexpected console statement."
+
+
+@pytest.mark.asyncio
 async def test_parse_summary_format_uses_summary_counts():
     parser = ESLintParser()
     result = await parser.parse_output(ESLINT_SUMMARY_OUTPUT)
@@ -326,13 +356,27 @@ def test_format_failures_terminal_with_violations():
     parser = ESLintParser()
     result = _result(errors=1, violations=[{
         "file": "/app/src/foo.ts", "line": 10, "column": 5,
-        "severity": 2, "ruleId": "no-unused-vars", "message": "x is unused",
+        "severity": 2, "ruleId": "no-unused-vars", "message": "x is unused", "shortText": "",
     }])
     text = parser.format_failures_terminal(result)
     assert "/app/src/foo.ts:10:5" in text
     assert "no-unused-vars" in text
     assert "x is unused" in text
     assert "[red]" in text
+
+
+def test_format_failures_terminal_prefers_shortText_over_message():
+    parser = ESLintParser()
+    result = _result(errors=0, warnings=1, violations=[{
+        "file": "/app/src/index.ts", "line": 19, "column": 3,
+        "severity": 1, "ruleId": "no-console", "message": "Unexpected console statement.",
+        "shortText": "Use `logger` from `server/logger.ts` instead of `console`",
+    }])
+    text = parser.format_failures_terminal(result)
+    # Should use shortText, not the generic message
+    assert "Use `logger` from `server/logger.ts` instead of `console`" in text
+    assert "/app/src/index.ts:19:3" in text
+    assert "[yellow]" in text
 
 
 def test_format_failures_terminal_warning_violation():
@@ -389,7 +433,7 @@ def test_format_failures_html_with_violations():
     parser = ESLintParser()
     result = _result(errors=1, violations=[{
         "file": "/app/src/foo.ts", "line": 10, "column": 5,
-        "severity": 2, "ruleId": "no-unused-vars", "message": "x is unused",
+        "severity": 2, "ruleId": "no-unused-vars", "message": "x is unused", "shortText": "",
     }])
     html = parser.format_failures_html(result)
     assert "sensors-violation" in html
@@ -397,6 +441,19 @@ def test_format_failures_html_with_violations():
     assert "sensors-error" in html
     assert "/app/src/foo.ts:10:5" in html
     assert "no-unused-vars" in html
+
+
+def test_format_failures_html_prefers_shortText_over_message():
+    parser = ESLintParser()
+    result = _result(errors=0, warnings=1, violations=[{
+        "file": "/app/src/index.ts", "line": 19, "column": 3,
+        "severity": 1, "ruleId": "no-console", "message": "Unexpected console statement.",
+        "shortText": "Use `logger` from `server/logger.ts` instead of `console`",
+    }])
+    html = parser.format_failures_html(result)
+    # Should use shortText, not the generic message
+    assert "Use `logger` from `server/logger.ts` instead of `console`" in html
+    assert "/app/src/index.ts:19:3" in html
 
 
 def test_format_failures_html_no_violations_fallback():
@@ -420,12 +477,25 @@ def test_format_failures_llm_with_violations():
     parser = ESLintParser()
     result = _result(errors=1, violations=[{
         "file": "cli.ts", "line": 26, "column": 9,
-        "severity": 2, "ruleId": "no-undef", "message": "'x' is not defined",
+        "severity": 2, "ruleId": "no-undef", "message": "'x' is not defined", "shortText": "",
     }])
     text = parser.format_failures_llm(result)
     assert "cli.ts:26:9" in text
     assert "no-undef" in text
     assert "'x' is not defined" in text
+
+
+def test_format_failures_llm_prefers_shortText_over_message():
+    parser = ESLintParser()
+    result = _result(errors=0, warnings=1, violations=[{
+        "file": "/app/src/index.ts", "line": 19, "column": 3,
+        "severity": 1, "ruleId": "no-console", "message": "Unexpected console statement.",
+        "shortText": "Use `logger` from `server/logger.ts` instead of `console`",
+    }])
+    text = parser.format_failures_llm(result)
+    # Should use shortText, not the generic message
+    assert "Use `logger` from `server/logger.ts` instead of `console`" in text
+    assert "/app/src/index.ts:19:3" in text
 
 
 def test_format_failures_llm_no_violations_fallback():
@@ -450,7 +520,7 @@ def test_format_failures_llm_skips_guidance_section_without_guidance():
     parser = ESLintParser()
     result = _result(errors=0, warnings=1, violations=[{
         "file": "f.ts", "line": 11, "column": 3,
-        "severity": 1, "ruleId": "no-console", "message": "Unexpected console statement",
+        "severity": 1, "ruleId": "no-console", "message": "Unexpected console statement", "shortText": "",
     }], triggered_rules=[{"ruleId": "no-console", "guidance": ""}])
     text = parser.format_failures_llm(result)
     assert "Correction guidance:" not in text
@@ -461,7 +531,7 @@ def test_format_failures_terminal_skips_triggered_rules_without_guidance():
     parser = ESLintParser()
     result = _result(errors=0, warnings=1, violations=[{
         "file": "f.ts", "line": 11, "column": 3,
-        "severity": 1, "ruleId": "no-console", "message": "Unexpected console statement",
+        "severity": 1, "ruleId": "no-console", "message": "Unexpected console statement", "shortText": "",
     }], triggered_rules=[{"ruleId": "no-console"}])
     text = parser.format_failures_terminal(result)
     assert "Triggered rules:" not in text

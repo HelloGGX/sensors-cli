@@ -64,6 +64,7 @@ class ESLintParser(OutputParser):
                     "message": msg.get("message", ""),
                     "severity": msg.get("severity", 2),
                     "ruleId": msg.get("ruleId"),
+                    "shortText": msg.get("shortText", ""),
                 })
         return violations
 
@@ -150,7 +151,7 @@ class ESLintParser(OutputParser):
                 line = v.get("line", 0)
                 col = v.get("column", 0)
                 rule = v.get("ruleId", "")
-                message = v.get("message", "")
+                message = v.get("shortText", "") or v.get("message", "")
                 lines.append(
                     f"  [{color}]{file_path}:{line}:{col} {severity}[/{color}] "
                     f"[dim]{rule}[/dim] {message}"
@@ -182,7 +183,7 @@ class ESLintParser(OutputParser):
             line = v.get("line", 0)
             col = v.get("column", 0)
             rule = v.get("ruleId", "")
-            message = v.get("message", "")
+            message = v.get("shortText", "") or v.get("message", "")
             parts.append(
                 f'<div class="sensors-violation">'
                 f'<span class="sensors-file">{file_path}:{line}:{col}</span> '
@@ -208,7 +209,7 @@ class ESLintParser(OutputParser):
                 line = v.get("line", 0)
                 col = v.get("column", 0)
                 rule = v.get("ruleId", "")
-                message = v.get("message", "")
+                message = v.get("shortText", "") or v.get("message", "")
                 lines.append(f"  {file_path}:{line}:{col} {severity} {rule} {message}")
         rules = self._rules_with_guidance(result)
         if rules:
