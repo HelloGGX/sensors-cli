@@ -1,10 +1,9 @@
 """import-linter output parser."""
 
 import re
-from datetime import datetime
 from typing import Any
 
-from sensors.config import RunnerResult, ScoreInfo
+from sensors.config import Finding, Metric, ParsedOutput, ScoreInfo
 
 from .base import OutputParser
 
@@ -27,17 +26,22 @@ _VIOLATION_ITEM_RE = re.compile(r"-\s+(\S+)\s+->\s+(\S+)(?:\s+\(l\.(\d+)\))?")
 class ImportLinterParser(OutputParser):
     """Parser for import-linter (lint-imports) output."""
 
-    async def parse_output(self, output: str) -> RunnerResult:
+    def parse(self, output: str) -> ParsedOutput:
         try:
             return self._do_parse(output)
         except Exception as e:
-            return RunnerResult(
-                timestamp=datetime.now(),
+            return ParsedOutput(
                 success=False,
-                output={"parseError": str(e), "raw": output[:500]},
+                summary=f"Parse error: {e}",
+                score=ScoreInfo(
+                    value=0,
+                    direction="less",
+                    description="Number of broken import contracts",
+                ),
+                extra={"parseError": str(e), "raw": output[:500]},
             )
 
-    def _do_parse(self, output: str) -> RunnerResult:
+    def _do_parse(self, output: str) -> ParsedOutput:
         summary = _SUMMARY_RE.search(output)
         if summary:
             kept_count = int(summary.group(1))
@@ -58,16 +62,38 @@ class ImportLinterParser(OutputParser):
             broken_count = len({v["contract"] for v in violations})
             kept_count = sum(1 for c in contracts if c["status"] == "KEPT")
 
-        success = broken_count == 0
-        return RunnerResult(
-            timestamp=datetime.now(),
-            success=success,
-            output={
-                "keptCount": kept_count,
-                "brokenCount": broken_count,
-                "contracts": contracts,
-                "violations": violations,
-            },
+        findings = []
+        for v in violations:
+            line = int(v["line"]) if v.get("line") else None
+            findings.append(Finding(
+                file=f"{v['source']} -> {v['target']}",
+                line=line,
+                rule=v["contract"],
+                message="Forbidden dependency",
+                context=v["description"],
+                severity="error",
+            ))
+
+        total = kept_count + broken_count
+        summary_text = (
+            f"All {total} contracts kept"
+            if broken_count == 0
+            else f"{broken_count} broken, {kept_count} kept"
+        )
+        return ParsedOutput(
+            success=broken_count == 0,
+            summary=summary_text,
+            score=ScoreInfo(
+                value=broken_count,
+                direction="less",
+                description="Number of broken import contracts",
+            ),
+            findings=findings,
+            metrics=[
+                Metric("keptCount", "Kept", kept_count),
+                Metric("brokenCount", "Broken", broken_count),
+            ],
+            extra={"contracts": contracts},
         )
 
     def _parse_violations(self, output: str) -> list[dict[str, Any]]:
@@ -91,99 +117,3 @@ class ImportLinterParser(OutputParser):
                 })
         return violations
 
-    def calculate_score(self, result: RunnerResult) -> ScoreInfo:
-        broken = result.output.get("brokenCount", 0)
-        return ScoreInfo(
-            value=broken,
-            direction="less",
-            description="Number of broken import contracts",
-        )
-
-    # -- Details (short one-liner) --
-
-    def _summary_text(self, result: RunnerResult) -> str:
-        kept = result.output.get("keptCount", 0)
-        broken = result.output.get("brokenCount", 0)
-        total = kept + broken
-        if broken == 0:
-            return f"All {total} contracts kept"
-        return f"{broken} broken, {kept} kept"
-
-    def format_details_terminal(self, result: RunnerResult) -> str:
-        text = self._summary_text(result)
-        if result.success:
-            return f"[green]{text}[/green]"
-        return f"[red]{text}[/red]"
-
-    def format_details_html(self, result: RunnerResult) -> str:
-        text = self._summary_text(result)
-        css = "sensors-success" if result.success else "sensors-error"
-        return f'<span class="{css}">{text}</span>'
-
-    def format_details_llm(self, result: RunnerResult) -> str:
-        return self._summary_text(result)
-
-    # -- Failures (multi-line) --
-
-    def format_failures_terminal(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        violations = result.output.get("violations", [])
-        if not violations:
-            broken = result.output.get("brokenCount", 0)
-            return f"[red]{broken} broken contract(s) (no details available)[/red]"
-        lines = []
-        current_contract = None
-        for v in violations:
-            if v["contract"] != current_contract:
-                current_contract = v["contract"]
-                lines.append(f"  [red]BROKEN[/red] [dim]{v['contract']}[/dim]")
-                lines.append(f"    [dim]{v['description']}[/dim]")
-            loc = f" (l.{v['line']})" if v.get("line") else ""
-            lines.append(f"    [yellow]{v['source']}[/yellow] -> [yellow]{v['target']}[/yellow]{loc}")
-        return "\n".join(lines)
-
-    def format_failures_html(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        violations = result.output.get("violations", [])
-        if not violations:
-            broken = result.output.get("brokenCount", 0)
-            return f'<span class="sensors-error">{broken} broken contract(s) (no details available)</span>'
-        parts = []
-        current_contract = None
-        for v in violations:
-            if v["contract"] != current_contract:
-                current_contract = v["contract"]
-                parts.append(
-                    f'<div class="sensors-violation">'
-                    f'<span class="sensors-error">BROKEN</span> '
-                    f'<span class="sensors-rule">{v["contract"]}</span>'
-                    f'<div class="sensors-message">{v["description"]}</div>'
-                )
-            loc = f" (l.{v['line']})" if v.get("line") else ""
-            parts.append(
-                f'<div class="sensors-file">{v["source"]} '
-                f'&rarr; {v["target"]}{loc}</div>'
-            )
-        if violations:
-            parts.append("</div>")
-        return "\n".join(parts)
-
-    def format_failures_llm(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        violations = result.output.get("violations", [])
-        if not violations:
-            broken = result.output.get("brokenCount", 0)
-            return f"{broken} broken contract(s) (no details available)"
-        lines = []
-        current_contract = None
-        for v in violations:
-            if v["contract"] != current_contract:
-                current_contract = v["contract"]
-                lines.append(f"BROKEN: {v['contract']}")
-                lines.append(f"  {v['description']}")
-            loc = f" (l.{v['line']})" if v.get("line") else ""
-            lines.append(f"  {v['source']} -> {v['target']}{loc}")
-        return "\n".join(lines)

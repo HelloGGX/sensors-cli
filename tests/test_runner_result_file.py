@@ -110,16 +110,19 @@ async def test_load_config_multiple_runners_result_resolved(tmp_path: Path):
         "    command: npm run test:mutation\n"
         "    interval: 60000\n"
         "    result: reports/m.json\n"
-        "  - name: git-diff\n"
-        "    parser: git_diff\n"
+        "  - name: lint\n"
+        "    parser: ruff\n"
         "    enabled: true\n"
+        "    mode: interval\n"
+        "    command: uv run ruff check sensors/\n"
+        "    interval: 10000\n"
     )
 
     config = await load_config(str(tmp_path))
     assert len(config.runners) == 2
     assert config.runners[0].result == str((tmp_path / "reports" / "m.json").resolve())
     assert config.runners[1].result is None
-    assert "git diff" in config.runners[1].command
+    assert "ruff check" in config.runners[1].command
 
 
 def test_runner_description_includes_result_path():

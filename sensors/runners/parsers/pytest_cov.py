@@ -1,10 +1,9 @@
 """Pytest-cov coverage output parser."""
 
 import re
-from datetime import datetime
 from typing import Any
 
-from sensors.config import RunnerResult, ScoreInfo
+from sensors.config import Metric, ParsedOutput, ScoreInfo
 
 from .base import OutputParser
 
@@ -12,7 +11,7 @@ from .base import OutputParser
 class PytestCovParser(OutputParser):
     """Parser for pytest-cov coverage report output."""
 
-    async def parse_output(self, output: str) -> RunnerResult:
+    def parse(self, output: str) -> ParsedOutput:
         try:
             text = output.strip()
             files = self._parse_coverage_table(text)
@@ -22,15 +21,34 @@ class PytestCovParser(OutputParser):
 
             success = num_failed == 0 and cov_fail is None
 
-            return RunnerResult(
-                timestamp=datetime.now(),
+            summary_parts = [f"{total.get('cover', 0)}% coverage"]
+            if num_failed:
+                summary_parts.append(f"{num_failed} failed")
+            summary_parts.append(f"{num_passed} passed")
+
+            return ParsedOutput(
                 success=success,
-                output={
-                    "totalCoverage": total.get("cover", 0),
+                summary=", ".join(summary_parts),
+                score=ScoreInfo(
+                    value=total.get("cover", 0),
+                    direction="more",
+                    description="Test coverage percentage",
+                ),
+                metrics=[
+                    Metric(
+                        "totalCoverage",
+                        "Coverage",
+                        total.get("cover", 0),
+                        unit="%",
+                        direction="more",
+                        threshold=80,
+                    ),
+                    Metric("passed", "Passed", num_passed, direction="more"),
+                    Metric("failed", "Failed", num_failed),
+                    Metric("misses", "Misses", total.get("miss", 0)),
+                ],
+                extra={
                     "totalStatements": total.get("stmts", 0),
-                    "totalMisses": total.get("miss", 0),
-                    "numPassedTests": num_passed,
-                    "numFailedTests": num_failed,
                     "numSkipped": num_skipped,
                     "files": files,
                     "coverageFailure": cov_fail,
@@ -38,10 +56,15 @@ class PytestCovParser(OutputParser):
                 },
             )
         except Exception as e:
-            return RunnerResult(
-                timestamp=datetime.now(),
+            return ParsedOutput(
                 success=False,
-                output={"parseError": str(e), "raw": output[:500]},
+                summary=f"Parse error: {e}",
+                score=ScoreInfo(
+                    value=0,
+                    direction="more",
+                    description="Test coverage percentage",
+                ),
+                extra={"parseError": str(e), "raw": output[:500]},
             )
 
     def _parse_coverage_table(self, text: str) -> list[dict[str, Any]]:
@@ -95,120 +118,3 @@ class PytestCovParser(OutputParser):
             return m.group(1).strip()
         return ""
 
-    def calculate_score(self, result: RunnerResult) -> ScoreInfo:
-        return ScoreInfo(
-            value=result.output.get("totalCoverage", 0),
-            direction="more",
-            description="Test coverage percentage",
-        )
-
-    # -- Helpers --
-
-    def _detail_text(self, result: RunnerResult) -> str:
-        cov = result.output.get("totalCoverage", 0)
-        passed = result.output.get("numPassedTests", 0)
-        failed = result.output.get("numFailedTests", 0)
-        parts = [f"{cov}% coverage"]
-        if failed:
-            parts.append(f"{failed} failed")
-        parts.append(f"{passed} passed")
-        return ", ".join(parts)
-
-    # -- Details --
-
-    def format_details_terminal(self, result: RunnerResult) -> str:
-        text = self._detail_text(result)
-        if not result.success:
-            return f"[red]{text}[/red]"
-        cov = result.output.get("totalCoverage", 0)
-        if cov >= 80:
-            return f"[green]{text}[/green]"
-        if cov >= 50:
-            return f"[yellow]{text}[/yellow]"
-        return f"[red]{text}[/red]"
-
-    def format_details_html(self, result: RunnerResult) -> str:
-        text = self._detail_text(result)
-        if not result.success:
-            return f'<span class="sensors-error">{text}</span>'
-        cov = result.output.get("totalCoverage", 0)
-        if cov >= 80:
-            return f'<span class="sensors-success">{text}</span>'
-        if cov >= 50:
-            return f'<span class="sensors-warn">{text}</span>'
-        return f'<span class="sensors-error">{text}</span>'
-
-    def format_details_llm(self, result: RunnerResult) -> str:
-        return self._detail_text(result)
-
-    # -- Failures --
-
-    def _get_low_coverage_files(self, result: RunnerResult, threshold: int = 30) -> list[dict]:
-        return [f for f in result.output.get("files", []) if f["cover"] < threshold]
-
-    def format_failures_terminal(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        return self._format_failure_items(result, "terminal")
-
-    def format_failures_html(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        return self._format_failure_items(result, "html")
-
-    def format_failures_llm(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        return self._format_failure_items(result, "llm")
-
-    def _format_coverage_failure(self, cov_fail: str, style: str) -> list[str]:
-        if style == "terminal":
-            return [f"  [red]{cov_fail}[/red]"]
-        if style == "html":
-            return [
-                f'<div class="sensors-violation">'
-                f'<span class="sensors-error">{cov_fail}</span></div>'
-            ]
-        return [f"  {cov_fail}"]
-
-    def _format_low_coverage_files(self, low: list[dict], style: str) -> list[str]:
-        if not low:
-            return []
-        if style == "terminal":
-            lines = ["  [yellow]Low coverage files:[/yellow]"]
-            lines.extend(f"    [dim]{f['name']}[/dim] {f['cover']}%" for f in low)
-            return lines
-        if style == "html":
-            return [
-                f'<div class="sensors-violation">'
-                f'<span class="sensors-file">{f["name"]}</span> '
-                f'<span class="sensors-warn">{f["cover"]}%</span>'
-                f'</div>'
-                for f in low
-            ]
-        lines = ["  Low coverage files:"]
-        lines.extend(f"    {f['name']} {f['cover']}%" for f in low)
-        return lines
-
-    def _format_failed_tests_fallback(self, failed: int, style: str) -> list[str]:
-        msg = f"{failed} test{'s' if failed != 1 else ''} failed"
-        if style == "terminal":
-            return [f"  [red]{msg}[/red]"]
-        if style == "html":
-            return [f'<span class="sensors-error">{msg}</span>']
-        return [f"  {msg}"]
-
-    def _format_failure_items(self, result: RunnerResult, style: str) -> str:
-        lines: list[str] = []
-
-        cov_fail = result.output.get("coverageFailure")
-        if cov_fail:
-            lines.extend(self._format_coverage_failure(cov_fail, style))
-
-        lines.extend(self._format_low_coverage_files(self._get_low_coverage_files(result), style))
-
-        failed = result.output.get("numFailedTests", 0)
-        if failed and not lines:
-            lines.extend(self._format_failed_tests_fallback(failed, style))
-
-        return "\n".join(lines)

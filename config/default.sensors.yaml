@@ -36,10 +36,6 @@ runners:
     command: uv run ruff check --select S --output-format full sensors/
     interval: 10000
 
-  - name: git-diff
-    parser: git_diff
-    enabled: true
-
   # CSS: enable and set command/workingDir for your repo (example matches lintcss:sensor scripts).
   - name: stylelint
     parser: stylelint

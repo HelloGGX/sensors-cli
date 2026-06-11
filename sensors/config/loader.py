@@ -35,35 +35,6 @@ _LOG_BACKUP_COUNT = 3
 # fields the user omitted are filled in before Pydantic validation.  Every
 # default can be overridden by specifying the field in the YAML.
 _BUILTIN_RUNNER_DEFAULTS: dict[str, dict] = {
-    "git_diff": {
-        "mode": "interval",
-        "interval": 30000,
-        "command": (
-            "git diff --numstat HEAD; "
-            "echo '---UNTRACKED---'; "
-            "git ls-files --others --exclude-standard | "
-            "while IFS= read -r f; do "
-            "[ -f \"$f\" ] && c=$(wc -l < \"$f\" 2>/dev/null | tr -d ' '); "
-            "printf \"%s\\t0\\t%s\\n\" \"${c:-0}\" \"$f\"; "
-            "done"
-        ),
-        "prompt": (
-            "Review the diff stats and use your own judgement about whether the change has grown "
-            "too large or too spread out. Signs that a change may be worth pausing to reflect on: "
-            "(1) Many files changed, especially across many different directories — this suggests "
-            "the change is touching multiple concerns at once and may be hard to review. "
-            "(2) A lot of existing lines removed or replaced — deletions and rewrites are higher "
-            "risk than purely additive changes, since they can break existing behaviour. "
-            "(3) Changes spread across unrelated parts of the codebase (e.g. core logic, config, "
-            "docs, and tests all in one go). "
-            "Signs that a large line count is NOT necessarily risky: a single large new file "
-            "(purely additive, doesn't touch existing behaviour); test file additions. "
-            "If the change looks too large or scattered, consider wrapping up this commit soon and "
-            "then continuing in a more focused next step. "
-            "Small commits are important to reduce risk when we're deploying - they make it easier "
-            "to bisect when things go wrong, and to revert changes if needed."
-        ),
-    },
 }
 
 

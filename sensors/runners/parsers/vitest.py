@@ -1,10 +1,8 @@
 """Vitest output parser."""
 
 import re
-from datetime import datetime
-from typing import Any
 
-from sensors.config import RunnerResult, ScoreInfo
+from sensors.config import Finding, Metric, ParsedOutput, ScoreInfo
 
 from .base import OutputParser
 
@@ -27,7 +25,7 @@ class VitestParser(OutputParser):
         """
         return bool(re.search(r'Tests\s+\d+\s+(failed|passed)', line))
 
-    async def parse_output(self, output: str) -> RunnerResult:
+    def parse(self, output: str) -> ParsedOutput:
         """Parse Vitest text output into RunnerResult.
 
         Handles all vitest summary formats:
@@ -62,17 +60,31 @@ class VitestParser(OutputParser):
 
         success = num_failed == 0
         failures = self._extract_failures(text)
-
-        out: dict[str, Any] = {
-            "numPassedTests": num_passed,
-            "numFailedTests": num_failed,
-            "failures": failures,
-        }
-
-        return RunnerResult(
-            timestamp=datetime.now(),
+        return ParsedOutput(
             success=success,
-            output=out,
+            summary=self._summary_text(num_passed, num_failed),
+            score=ScoreInfo(
+                value=num_failed,
+                direction="less",
+                description="Number of failing tests",
+            ),
+            findings=[self._finding_from_failure(f) for f in failures],
+            metrics=[
+                Metric("passed", "Passed", num_passed, direction="more"),
+                Metric("failed", "Failed", num_failed),
+            ],
+        )
+
+    def _finding_from_failure(self, failure: dict[str, str]) -> Finding:
+        breadcrumb = failure.get("test", "unknown")
+        parts = [p.strip() for p in breadcrumb.split(" > ")]
+        file_part = parts[0] if parts else breadcrumb
+        return Finding(
+            file=file_part,
+            rule=failure.get("type", "test_failure"),
+            message=failure.get("message", "")[:500],
+            context=breadcrumb,
+            severity="error",
         )
 
     def _extract_failures(self, text: str) -> list[dict[str, str]]:
@@ -129,92 +141,7 @@ class VitestParser(OutputParser):
 
         return failures
 
-    def calculate_score(self, result: RunnerResult) -> ScoreInfo:
-        _, failed = self._counts(result)
-        return ScoreInfo(value=failed, direction="less", description="Number of failing tests")
-
-    # -- Helpers --
-
-    def _counts(self, result: RunnerResult) -> tuple:
-        output = result.output
-        return output.get("numPassedTests", 0), output.get("numFailedTests", 0)
-
     def _summary_text(self, passed: int, failed: int) -> str:
         if failed == 0:
             return f"{passed} passed"
         return f"{failed} failed, {passed} passed"
-
-    # -- Details (short one-liner) --
-
-    def format_details_terminal(self, result: RunnerResult) -> str:
-        passed, failed = self._counts(result)
-        text = self._summary_text(passed, failed)
-        if failed > 0:
-            return f"[red]{text}[/red]"
-        return f"[green]{text}[/green]"
-
-    def format_details_html(self, result: RunnerResult) -> str:
-        passed, failed = self._counts(result)
-        text = self._summary_text(passed, failed)
-        if failed > 0:
-            return f'<span class="sensors-error">{text}</span>'
-        return f'<span class="sensors-success">{text}</span>'
-
-    def format_details_llm(self, result: RunnerResult) -> str:
-        passed, failed = self._counts(result)
-        return self._summary_text(passed, failed)
-
-    # -- Failures (multi-line) --
-
-    def _format_failure_items(self, result: RunnerResult, style: str) -> str:
-        """Shared logic for formatting failure items across output styles."""
-        if result.success:
-            return ""
-
-        failures = result.output.get("failures", [])
-
-        if not failures:
-            _, failed = self._counts(result)
-            msg = f"{failed} test{'s' if failed != 1 else ''} failed (no details available)"
-            if style == "terminal":
-                return f"  [red]{msg}[/red]"
-            if style == "html":
-                return f'<span class="sensors-error">{msg}</span>'
-            return f"  {msg}"
-
-        lines = []
-        for failure in failures:
-            test_breadcrumb = failure.get("test", "unknown")
-            message = failure.get("message", "")[:200]
-            # Vitest breadcrumb: "file.test.ts > Suite > test name"
-            parts = [p.strip() for p in test_breadcrumb.split(" > ")]
-            file_part = parts[0] if parts else "unknown"
-            test_part = " > ".join(parts[1:]) if len(parts) > 1 else test_breadcrumb
-            if style == "terminal":
-                lines.append(f"  [red]FAIL:[/red] [dim]{file_part}[/dim] > {test_part}")
-                if message:
-                    lines.append(f"    {message}")
-            elif style == "html":
-                lines.append(
-                    f'<div class="sensors-violation">'
-                    f'<span class="sensors-error">FAIL:</span> '
-                    f'<span class="sensors-file">{file_part}</span>'
-                    f' &rsaquo; {test_part}'
-                    f'<div class="sensors-message">{message}</div>'
-                    f'</div>'
-                )
-            else:
-                lines.append(f"  FAIL: {file_part} > {test_part}")
-                if message:
-                    lines.append(f"    {message}")
-
-        return "\n".join(lines)
-
-    def format_failures_terminal(self, result: RunnerResult) -> str:
-        return self._format_failure_items(result, "terminal")
-
-    def format_failures_html(self, result: RunnerResult) -> str:
-        return self._format_failure_items(result, "html")
-
-    def format_failures_llm(self, result: RunnerResult) -> str:
-        return self._format_failure_items(result, "llm")

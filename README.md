@@ -74,7 +74,7 @@ flowchart TB
 - **Foreground or background** — `sensors start --show` for the table UI, or `sensors start` to detach.
 - **Attach viewer** — `sensors show` when a sensors process is already up.
 - **Dual runner modes** — watch (streaming) and interval (periodic).
-- **Pluggable parsers** — ESLint, Vitest, pytest, Ruff, `git_diff`, and more under `sensors/runners/parsers/`.
+- **Pluggable parsers** — ESLint, Vitest, pytest, Ruff, and more under `sensors/runners/parsers/`.
 - **File-backed state** — atomic writes to `stem.state.json`; optional score **snapshots** for trend comparison.
 - **Run as background process** — lightweight JSON-line RPC over a Unix socket (`ping`, `snapshot`).
 
@@ -151,7 +151,7 @@ The project comes with a bunch of output parsers for common tools, like `eslint`
 
 ### Adding a new parser
 
-Add a **parser** under `runners/parsers/` and register it in `runners/parsers/__init__.py`. The generic runner handles process lifecycle; see [`.claude/skills/_new-runner-type/SKILL.md`](/.claude/skills/_new-runner-type/SKILL.md) in this repo for a guided template.
+Add a **parser** under `runners/parsers/` and register it in `runners/parsers/__init__.py`. The generic runner handles process lifecycle; see [`.claude/skills/_new-parser/SKILL.md`](/.claude/skills/_new-parser/SKILL.md) in this repo for a guided template.
 
 ## Default parser: Expected output format
 

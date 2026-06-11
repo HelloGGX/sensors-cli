@@ -48,7 +48,6 @@ all rendering. Parsers drop to one method.
 | `pytest_cov` | — | totalCoverage%(threshold=80), passed, failed, misses | — | per-file table in `extra` |
 | `vitest_cov` | — | totalBranch%(threshold=80), totalStmts%, totalFuncs% | — | per-file table in `extra` |
 | `stryker` | — | mutationScoreOfCovered%(threshold=high from report), killed, survived, etc. | — | — |
-| `git_diff` | — | linesAdded, linesRemoved, filesChanged, etc. | — | file list in `extra` |
 | `default` | generic violations list | scoreValue | — | — |
 
 ---
@@ -98,12 +97,6 @@ use this method.
 Most parsers are fully covered by `Finding`, `Metric`, and `GuidanceBlock`. The only
 remaining special case is:
 
-### git_diff — always success, per-file table
-
-The per-file breakdown does not fit `Finding` (no severity, no rule) and does not fit
-`Metric` (it is a list of records). It goes in `extra["files"]` and `extra["testFiles"]`.
-`git_diff` can override `_failures` in a `GenericFormatter` subclass. All other parsers
-get generic rendering for free; `git_diff` opts in to a focused override.
 
 ---
 
@@ -131,11 +124,11 @@ runner was wired up immediately with the `NotImplementedError` fallback:
 Every parser that implements `parse()` is immediately live in production with no other
 changes needed. Unmigrated parsers continue working exactly as before.
 
-### Step 3 — Migrate parsers one at a time (IN PROGRESS)
+### Step 3 — Migrate parsers one at a time (DONE)
 
 For each parser, add `parse()` and delete all legacy methods and tests for those methods.
 
-**Migrated (8/14):**
+**Migrated (14/14):**
 - `eslint` — `parse()` implemented; all legacy methods and tests deleted
 - `stylelint` — `parse()` implemented; all legacy methods and tests deleted
 - `vitest_cov` — `parse()` implemented; all legacy methods and tests deleted
@@ -144,10 +137,11 @@ For each parser, add `parse()` and delete all legacy methods and tests for those
 - `stryker` — `parse()` implemented; all legacy methods and tests deleted
 - `tsc` — `parse()` implemented; all legacy methods and tests deleted
 - `default` — `parse()` implemented with `ParsedOutput`-shaped JSON schema; legacy methods and tests deleted
-
-**Remaining (6/14):**
-`ruff`, `import_linter`, `pytest`,
-`pytest_cov`, `vitest`, `git_diff`
+- `ruff` — `parse()` implemented; all legacy methods and tests deleted
+- `import_linter` — `parse()` implemented; all legacy methods and tests deleted
+- `pytest` — `parse()` implemented; all legacy methods and tests deleted
+- `pytest_cov` — `parse()` implemented; all legacy methods and tests deleted
+- `vitest` — `parse()` implemented; all legacy methods and tests deleted
 
 Migration checklist per parser:
 1. Add `def parse(self, output: str) -> ParsedOutput` — implement using `Finding`,
@@ -200,4 +194,4 @@ all rendering. Parsers drop to one method.
 
 ## Updating the skill
 
-Once we're done with the refactoring, we also need to update our skill `_new-runner-type`. While we're at it, we should also rename it to `_new-parser`
+The skill has been updated and renamed from `_new-runner-type` to `_new-parser`.

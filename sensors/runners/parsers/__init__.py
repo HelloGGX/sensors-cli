@@ -12,7 +12,6 @@ from .base import OutputParser
 from .default import DefaultParser
 from .depcruise import DepcruiseParser
 from .eslint import ESLintParser
-from .git_diff import GitDiffParser
 from .import_linter import ImportLinterParser
 from .pytest import PytestParser
 from .pytest_cov import PytestCovParser
@@ -68,7 +67,6 @@ ParserRegistry.register("default", DefaultParser)
 ParserRegistry.register("depcruise", DepcruiseParser)
 ParserRegistry.register("import_linter", ImportLinterParser)
 ParserRegistry.register("eslint", ESLintParser)
-ParserRegistry.register("git_diff", GitDiffParser)
 ParserRegistry.register("vitest", VitestParser)
 ParserRegistry.register("pytest", PytestParser)
 ParserRegistry.register("pytest_cov", PytestCovParser)
@@ -81,7 +79,7 @@ ParserRegistry.register("vitest_cov", VitestCovParser)
 
 
 __all__ = [
-    "OutputParser", "DefaultParser", "DepcruiseParser", "ESLintParser", "GitDiffParser",
+    "OutputParser", "DefaultParser", "DepcruiseParser", "ESLintParser",
     "ImportLinterParser", "StrykerParser", "StylelintParser", "TscParser", "VitestParser", "VitestCovParser",
     "PytestParser", "PytestCovParser", "RuffParser", "SemgrepParser",
     "ParserRegistry",
