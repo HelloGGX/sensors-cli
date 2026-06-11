@@ -41,7 +41,6 @@ class PytestCovParser(OutputParser):
                         total.get("cover", 0),
                         unit="%",
                         direction="more",
-                        threshold=80,
                     ),
                     Metric("passed", "Passed", num_passed, direction="more"),
                     Metric("failed", "Failed", num_failed),

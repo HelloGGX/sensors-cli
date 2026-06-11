@@ -105,86 +105,106 @@ class GenericRunner:
             self.rerun_event.set()
 
     async def on_result(self, result: RunnerResult, parsed: ParsedOutput | None = None) -> None:
-        """Handle a new runner result by persisting to state manager.
-
-        Computes all 6 formatted strings via the parser before persisting.
-
-        Args:
-            result: The parsed runner result
-        """
+        """Handle a new runner result by persisting to state manager."""
         if not self.state_manager:
             return
+        formatted, score, status = self._compute_outcome(result, parsed)
+        formatted, status = self._apply_threshold(formatted, score, status)
+        await self.state_manager.update_state(
+            self.config.name,
+            RunnerState(
+                lastRun=result.timestamp,
+                status=status,
+                mode=self._mode_label(),
+                formatted=formatted,
+                score=score,
+            ),
+        )
+
+    def _compute_outcome(
+        self, result: RunnerResult, parsed: ParsedOutput | None
+    ) -> tuple[FormattedOutput, ScoreInfo, str]:
+        """Return (formatted, score, status) for a completed run."""
         if result.output.get("sensorsCommandTimeout"):
-            limit = result.output.get("sensorsTimeoutSeconds")
-            msg = (
-                f"Command timed out after {limit}s"
-                if limit is not None
-                else "Command timed out"
-            )
-            formatted = FormattedOutput(
+            return self._timeout_outcome(result)
+        formatted, score = self._format_and_score(parsed, result)
+        status = "success" if result.success else "failure"
+        return formatted, score, status
+
+    @staticmethod
+    def _timeout_outcome(result: RunnerResult) -> tuple[FormattedOutput, ScoreInfo, str]:
+        """Return outcome for a run that hit the command timeout."""
+        limit = result.output.get("sensorsTimeoutSeconds")
+        msg = f"Command timed out after {limit}s" if limit is not None else "Command timed out"
+        formatted = FormattedOutput(
+            details_terminal=f"[red]{msg}[/red]",
+            details_html=f'<span class="sensors-error">{msg}</span>',
+            details_llm=msg,
+            failures_terminal=f"  [red]{msg}[/red]",
+            failures_html=f'<span class="sensors-error">{msg}</span>',
+            failures_llm=msg,
+        )
+        score = ScoreInfo(value=0, direction="more", description="Last run did not finish (timeout)")
+        return formatted, score, "failure"
+
+    @staticmethod
+    def _format_and_score(
+        parsed: ParsedOutput | None, result: RunnerResult
+    ) -> tuple[FormattedOutput, ScoreInfo]:
+        """Return (formatted, score) for a successfully executed run."""
+        if parsed is not None:
+            return _formatter.format(parsed), parsed.score
+        err = result.output.get("parseError", "Unknown error")
+        msg = f"Error: {err}"
+        return (
+            FormattedOutput(
                 details_terminal=f"[red]{msg}[/red]",
                 details_html=f'<span class="sensors-error">{msg}</span>',
                 details_llm=msg,
-                failures_terminal=f"  [red]{msg}[/red]",
-                failures_html=f'<span class="sensors-error">{msg}</span>',
-                failures_llm=msg,
-            )
-            score = ScoreInfo(
-                value=0,
-                direction="more",
-                description="Last run did not finish (timeout)",
-            )
-            status = "failure"
-        else:
-            status = "success" if result.success else "failure"
-            if parsed is not None:
-                formatted = _formatter.format(parsed)
-                score = parsed.score
-            else:
-                formatted = FormattedOutput(
-                    details_terminal=self.parser.format_details_terminal(result),
-                    details_html=self.parser.format_details_html(result),
-                    details_llm=self.parser.format_details_llm(result),
-                    failures_terminal=self.parser.format_failures_terminal(result),
-                    failures_html=self.parser.format_failures_html(result),
-                    failures_llm=self.parser.format_failures_llm(result),
-                )
-                score = self.parser.calculate_score(result)
-            threshold = self.config.threshold
-            if status == "success" and score is not None and threshold is not None:
-                below = (
-                    score.value < threshold
-                    if score.direction == "more"
-                    else score.value > threshold
-                )
-                if below:
-                    status = "below_threshold"
-                    note = f"below target threshold of {threshold:g}"
-                    formatted = FormattedOutput(
-                        details_terminal=f"{formatted.details_terminal} ({note})",
-                        details_html=f"{formatted.details_html} ({note})",
-                        details_llm=f"{formatted.details_llm} ({note})",
-                        failures_terminal=formatted.failures_terminal,
-                        failures_html=formatted.failures_html,
-                        failures_llm=formatted.failures_llm,
-                    )
-        if self.config.mode == RunnerMode.WATCH:
-            mode_label = "watch"
-        elif self.config.mode == RunnerMode.TRIGGERED:
-            mode_label = "triggered"
-        elif self.config.interval:
-            secs = self.config.interval / 1000
-            mode_label = f"every {secs:g}s"
-        else:
-            mode_label = "interval"
-        runner_state = RunnerState(
-            lastRun=result.timestamp,
-            status=status,
-            mode=mode_label,
-            formatted=formatted,
-            score=score,
+            ),
+            ScoreInfo(value=0, direction="less", description="Infrastructure error"),
         )
-        await self.state_manager.update_state(self.config.name, runner_state)
+
+    def _apply_threshold(
+        self, formatted: FormattedOutput, score: ScoreInfo, status: str
+    ) -> tuple[FormattedOutput, str]:
+        """Downgrade status to below_threshold and recolor formatted output if needed.
+
+        Checks config.threshold first (explicit runner override), then falls back
+        to score.threshold (parser-declared default, e.g. 80% for coverage).
+        """
+        if status != "success":
+            return formatted, status
+        threshold = self.config.threshold if self.config.threshold is not None else score.threshold
+        if threshold is None:
+            return formatted, status
+        below = score.value < threshold if score.direction == "more" else score.value > threshold
+        if not below:
+            return formatted, status
+        note = f"below target threshold of {threshold:g}"
+        # Use the plain LLM text as the base so we can re-wrap with yellow cleanly.
+        summary = formatted.details_llm
+        return (
+            FormattedOutput(
+                details_terminal=f"[yellow]{summary} ({note})[/yellow]",
+                details_html=f'<span class="sensors-warn">{summary} ({note})</span>',
+                details_llm=f"{summary} ({note})",
+                failures_terminal=formatted.failures_terminal,
+                failures_html=formatted.failures_html,
+                failures_llm=formatted.failures_llm,
+            ),
+            "below_threshold",
+        )
+
+    def _mode_label(self) -> str:
+        """Return a human-readable label for the runner's current mode."""
+        if self.config.mode == RunnerMode.WATCH:
+            return "watch"
+        if self.config.mode == RunnerMode.TRIGGERED:
+            return "triggered"
+        if self.config.interval:
+            return f"every {self.config.interval / 1000:g}s"
+        return "interval"
 
     @staticmethod
     def strip_ansi(text: str) -> str:
@@ -228,15 +248,11 @@ class GenericRunner:
             },
         )
 
-    async def _parse_input(self, raw: str) -> tuple[ParsedOutput | None, RunnerResult]:
-        """Try parse() first; fall back to parse_output() for unmigrated parsers."""
-        try:
-            parsed = self.parser.parse(raw)
-            result = RunnerResult(timestamp=datetime.now(), success=parsed.success, output={})
-            return parsed, result
-        except NotImplementedError:
-            result = await self.parser.parse_output(raw)
-            return None, result
+    async def _parse_input(self, raw: str) -> tuple[ParsedOutput, RunnerResult]:
+        """Parse raw output via the parser's parse() method."""
+        parsed = self.parser.parse(raw)
+        result = RunnerResult(timestamp=datetime.now(), success=parsed.success, output={})
+        return parsed, result
 
     @staticmethod
     def _wrap_with_script(command: str) -> str:

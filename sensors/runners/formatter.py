@@ -43,14 +43,8 @@ class GenericFormatter:
         )
 
     def _details(self, parsed: ParsedOutput, style: str) -> str:
-        text = parsed.summary
-        # Use threshold from the primary metric when available.
-        primary = next((m for m in parsed.metrics if m.direction == "more"), None)
-        if primary and primary.threshold is not None:
-            color = "green" if primary.value >= primary.threshold else "red"
-        else:
-            color = "green" if parsed.success else "red"
-        return _apply_color(text, color, style)
+        color = "green" if parsed.success else "red"
+        return _apply_color(parsed.summary, color, style)
 
     def _failures(self, parsed: ParsedOutput, style: str) -> str:
         if parsed.success:

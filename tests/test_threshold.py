@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from sensors.config.schema import RunnerConfig, RunnerMode
-from sensors.config import FormattedOutput, RunnerResult, ScoreInfo
+from sensors.config import FormattedOutput, ParsedOutput, RunnerResult, ScoreInfo
 from sensors.persistence.models import RunnerState
 from sensors.persistence.state_manager import StateManager
 from sensors.runners.generic import GenericRunner
@@ -16,46 +16,22 @@ from sensors.tui.display import DisplayManager
 
 
 class _FakeParser(OutputParser):
-    """Minimal parser that returns a fixed result."""
+    """Minimal parser that returns a fixed ParsedOutput."""
 
     def __init__(self, score_value: int, direction: str = "more"):
         self._score_value = score_value
         self._direction = direction
 
-    def parse_output(self, output: str) -> RunnerResult:
-        return RunnerResult(
-            timestamp=datetime.now(),
+    def parse(self, output: str) -> ParsedOutput:
+        return ParsedOutput(
             success=True,
-            output={"value": self._score_value},
+            summary=f"coverage: {self._score_value}%",
+            score=ScoreInfo(
+                value=self._score_value,
+                direction=self._direction,
+                description="coverage %",
+            ),
         )
-
-    def format_details_terminal(self, result: RunnerResult) -> str:
-        return f"coverage: {result.output['value']}%"
-
-    def format_details_html(self, result: RunnerResult) -> str:
-        return f"coverage: {result.output['value']}%"
-
-    def format_details_llm(self, result: RunnerResult) -> str:
-        return f"coverage: {result.output['value']}%"
-
-    def format_failures_terminal(self, result: RunnerResult) -> str:
-        return ""
-
-    def format_failures_html(self, result: RunnerResult) -> str:
-        return ""
-
-    def format_failures_llm(self, result: RunnerResult) -> str:
-        return ""
-
-    def calculate_score(self, result: RunnerResult) -> ScoreInfo:
-        return ScoreInfo(
-            value=result.output["value"],
-            direction=self._direction,
-            description="coverage %",
-        )
-
-    def is_watch_run_complete(self, line: str) -> bool:
-        return False
 
 
 def _make_config(threshold: float | None, direction: str = "more") -> RunnerConfig:
@@ -78,17 +54,14 @@ async def test_on_result_below_threshold_more_direction():
         cfg = _make_config(threshold=80.0)
         runner = GenericRunner(cfg, _FakeParser(score_value=75), state_manager=sm)
 
-        result = RunnerResult(
-            timestamp=datetime.now(),
-            success=True,
-            output={"value": 75},
-        )
-        await runner.on_result(result)
+        parsed, result = await runner._parse_input("")
+        await runner.on_result(result, parsed)
 
         state = await sm.read_state()
         rs = state.runners["coverage"]
         assert rs.status == "below_threshold"
         assert "below target threshold of 80" in rs.formatted.details_llm
+        assert "[yellow]" in rs.formatted.details_terminal
         assert "below target threshold of 80" in rs.formatted.details_terminal
 
 
@@ -100,12 +73,8 @@ async def test_on_result_meets_threshold_more_direction():
         cfg = _make_config(threshold=80.0)
         runner = GenericRunner(cfg, _FakeParser(score_value=80), state_manager=sm)
 
-        result = RunnerResult(
-            timestamp=datetime.now(),
-            success=True,
-            output={"value": 80},
-        )
-        await runner.on_result(result)
+        parsed, result = await runner._parse_input("")
+        await runner.on_result(result, parsed)
 
         state = await sm.read_state()
         assert state.runners["coverage"].status == "success"
@@ -127,17 +96,39 @@ async def test_on_result_below_threshold_less_direction():
         )
         runner = GenericRunner(cfg, _FakeParser(score_value=8, direction="less"), state_manager=sm)
 
-        result = RunnerResult(
-            timestamp=datetime.now(),
-            success=True,
-            output={"value": 8},
-        )
-        await runner.on_result(result)
+        parsed, result = await runner._parse_input("")
+        await runner.on_result(result, parsed)
 
         state = await sm.read_state()
         rs = state.runners["violations"]
         assert rs.status == "below_threshold"
         assert "below target threshold of 5" in rs.formatted.details_llm
+
+
+@pytest.mark.asyncio
+async def test_score_threshold_fallback_no_config_threshold():
+    """score.threshold triggers below_threshold when config.threshold is not set."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sm = StateManager(Path(tmpdir) / "state.json")
+        cfg = _make_config(threshold=None)
+
+        class _CovParser(OutputParser):
+            def parse(self, output: str) -> ParsedOutput:
+                return ParsedOutput(
+                    success=True,
+                    summary="70% coverage",
+                    score=ScoreInfo(value=70, direction="more", description="cov", threshold=80),
+                )
+
+        runner = GenericRunner(cfg, _CovParser(), state_manager=sm)
+        parsed, result = await runner._parse_input("")
+        await runner.on_result(result, parsed)
+
+        state = await sm.read_state()
+        rs = state.runners["coverage"]
+        assert rs.status == "below_threshold"
+        assert "[yellow]" in rs.formatted.details_terminal
+        assert "below target threshold of 80" in rs.formatted.details_llm
 
 
 @pytest.mark.asyncio
@@ -148,12 +139,8 @@ async def test_on_result_no_threshold_stays_success():
         cfg = _make_config(threshold=None)
         runner = GenericRunner(cfg, _FakeParser(score_value=50), state_manager=sm)
 
-        result = RunnerResult(
-            timestamp=datetime.now(),
-            success=True,
-            output={"value": 50},
-        )
-        await runner.on_result(result)
+        parsed, result = await runner._parse_input("")
+        await runner.on_result(result, parsed)
 
         state = await sm.read_state()
         assert state.runners["coverage"].status == "success"
@@ -167,12 +154,16 @@ async def test_on_result_failure_not_converted_to_below_threshold():
         cfg = _make_config(threshold=80.0)
         runner = GenericRunner(cfg, _FakeParser(score_value=0), state_manager=sm)
 
-        result = RunnerResult(
-            timestamp=datetime.now(),
-            success=False,
-            output={"value": 0},
-        )
-        await runner.on_result(result)
+        # Override the parser to return failure so on_result sees success=False.
+        class _FailParser(_FakeParser):
+            def parse(self, output: str) -> ParsedOutput:
+                p = super().parse(output)
+                p.success = False
+                return p
+
+        runner.parser = _FailParser(score_value=0)
+        parsed, result = await runner._parse_input("")
+        await runner.on_result(result, parsed)
 
         state = await sm.read_state()
         assert state.runners["coverage"].status == "failure"

@@ -22,6 +22,10 @@ class ScoreInfo(BaseModel):
         default="",
         description="Human-readable description of what the score measures (e.g. 'Number of failing tests')"
     )
+    threshold: float | None = Field(
+        default=None,
+        description="Optional target threshold. Below this value is considered 'below threshold' for direction='more'."
+    )
 
 
 class RunnerResult(BaseModel):

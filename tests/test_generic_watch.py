@@ -3,14 +3,13 @@
 import asyncio
 import platform
 import tempfile
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sensors.config.schema import RunnerConfig, RunnerMode
-from sensors.config import RunnerResult, ScoreInfo
+from sensors.config import ParsedOutput, RunnerResult, ScoreInfo
 from sensors.persistence.state_manager import StateManager
 from sensors.runners.generic import GenericRunner
 from sensors.runners.parsers.base import OutputParser
@@ -27,36 +26,15 @@ class _WatchParser(OutputParser):
     def is_watch_run_complete(self, line: str) -> bool:
         return line == self.complete_marker
 
-    async def parse_output(self, output: str) -> RunnerResult:
+    def parse(self, output: str) -> ParsedOutput:
         if self.fail_parse:
             raise ValueError("parse failed")
         self.parsed_outputs.append(output)
-        return RunnerResult(
-            timestamp=datetime.now(),
+        return ParsedOutput(
             success=True,
-            output={"lines": output.count("\n") + 1},
+            summary=f"{output.count(chr(10)) + 1} lines",
+            score=ScoreInfo(value=0, direction="less", description="n/a"),
         )
-
-    def format_details_terminal(self, result: RunnerResult) -> str:
-        return "ok"
-
-    def format_details_html(self, result: RunnerResult) -> str:
-        return "ok"
-
-    def format_details_llm(self, result: RunnerResult) -> str:
-        return "ok"
-
-    def format_failures_terminal(self, result: RunnerResult) -> str:
-        return ""
-
-    def format_failures_html(self, result: RunnerResult) -> str:
-        return ""
-
-    def format_failures_llm(self, result: RunnerResult) -> str:
-        return ""
-
-    def calculate_score(self, result: RunnerResult) -> ScoreInfo:
-        return ScoreInfo(value=0, direction="less", description="n/a")
 
 
 def _watch_config(**kwargs) -> RunnerConfig:

@@ -57,7 +57,7 @@ class TestDetails:
         assert out.details_llm == "No issues"
 
     def test_metric_threshold_green_when_above(self):
-        """Primary 'more' metric above threshold -> green."""
+        """Primary 'more' metric above threshold -> green (success=True)."""
         parsed = _parsed(
             success=True,
             summary="85% branch",
@@ -66,15 +66,20 @@ class TestDetails:
         out = GenericFormatter().format(parsed)
         assert "[green]" in out.details_terminal
 
-    def test_metric_threshold_red_when_below(self):
-        """Primary 'more' metric below threshold -> red."""
+    def test_success_true_always_green_regardless_of_metric_threshold(self):
+        """success=True means green even if the metric value is below its threshold.
+
+        Color authority is parsed.success, not the metric threshold. Threshold on
+        a metric is informational only; the runner's config.threshold drives status.
+        """
         parsed = _parsed(
             success=True,
             summary="60% branch",
             metrics=[Metric("branch", "Branch", 60.0, "%", "more", threshold=80.0)],
         )
         out = GenericFormatter().format(parsed)
-        assert "[red]" in out.details_terminal
+        assert "[green]" in out.details_terminal
+        assert "[red]" not in out.details_terminal
 
 
 # ---------------------------------------------------------------------------
