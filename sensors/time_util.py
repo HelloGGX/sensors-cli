@@ -63,3 +63,21 @@ def format_local_short(dt: datetime) -> str:
 def format_local_datetime(dt: datetime) -> str:
     """Format as YYYY-MM-DD HH:MM:SS in local time."""
     return as_local_for_display(dt).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def seconds_ago(dt: datetime, now: datetime) -> str:
+    """Return a human-readable 'Xs ago' string comparing dt to now.
+
+    Handles mixed naive/aware datetimes by using .timestamp() to avoid TypeError.
+    """
+    delta = now.timestamp() - dt.timestamp()
+    if delta < 0:
+        return "just now"
+    secs = int(delta)
+    if secs < 60:
+        return f"{secs}s ago"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins}m ago"
+    hours = mins // 60
+    return f"{hours}h ago"

@@ -15,21 +15,21 @@ runners:
     enabled: true
     mode: interval
     command: uv run pytest tests/ --cov=sensors --cov-report=term-missing
-    interval: 10000
+    interval: 13000
 
   - name: ruff
     parser: default
     enabled: true
     mode: interval
     command: python ./.sensors/maintainability/ruff_guidance.py -- check sensors/
-    interval: 10000
+    interval: 8000
 
   - name: ruff-sec
     parser: default
     enabled: true
     mode: interval
     command: python ./.sensors/maintainability/ruff_guidance.py -- --select S check sensors/
-    interval: 10000
+    interval: 15000
   
   - name: imports
     parser: import_linter
@@ -37,3 +37,10 @@ runners:
     mode: interval
     command: uv run lint-imports
     interval: 26000
+
+  - name: custom
+    parser: default
+    enabled: true
+    mode: interval
+    command: uv run python ./.sensors/maintainability/custom_checks.py --output-format json
+    interval: 19000

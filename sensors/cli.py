@@ -42,29 +42,12 @@ from sensors.persistence.models import (
     StateEntry,
 )
 from sensors.persistence.state_manager import StateManager
+from sensors.time_util import seconds_ago as _seconds_ago
 from sensors.tui.display import DisplayManager
 
 app = typer.Typer(help="Sensors: continuous code quality monitoring for coding agents")
 _state_managers: dict[tuple[str, str | None], StateManager] = {}
 
-
-def _seconds_ago(dt, now):
-    from datetime import datetime as dt_mod
-
-    if not isinstance(dt, dt_mod) or not isinstance(now, dt_mod):
-        return ""
-    # State file uses naive local times; history/check may use UTC-aware.
-    delta = now.timestamp() - dt.timestamp()
-    if delta < 0:
-        return "just now"
-    secs = int(delta)
-    if secs < 60:
-        return f"{secs}s ago"
-    mins = secs // 60
-    if mins < 60:
-        return f"{mins}m ago"
-    hours = mins // 60
-    return f"{hours}h ago"
 
 
 def _format_runner_dir(working_dir: str, workspace_root: str | None) -> str | None:
