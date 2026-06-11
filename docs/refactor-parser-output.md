@@ -135,7 +135,7 @@ changes needed. Unmigrated parsers continue working exactly as before.
 
 For each parser, add `parse()` and delete all legacy methods and tests for those methods.
 
-**Migrated (7/14):**
+**Migrated (8/14):**
 - `eslint` — `parse()` implemented; all legacy methods and tests deleted
 - `stylelint` — `parse()` implemented; all legacy methods and tests deleted
 - `vitest_cov` — `parse()` implemented; all legacy methods and tests deleted
@@ -143,10 +143,11 @@ For each parser, add `parse()` and delete all legacy methods and tests for those
 - `semgrep` — `parse()` implemented; all legacy methods and tests deleted
 - `stryker` — `parse()` implemented; all legacy methods and tests deleted
 - `tsc` — `parse()` implemented; all legacy methods and tests deleted
+- `default` — `parse()` implemented with `ParsedOutput`-shaped JSON schema; legacy methods and tests deleted
 
-**Remaining (7/14):**
+**Remaining (6/14):**
 `ruff`, `import_linter`, `pytest`,
-`pytest_cov`, `vitest`, `git_diff`, `default`
+`pytest_cov`, `vitest`, `git_diff`
 
 Migration checklist per parser:
 1. Add `def parse(self, output: str) -> ParsedOutput` — implement using `Finding`,

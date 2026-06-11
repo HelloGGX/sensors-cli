@@ -152,46 +152,10 @@ def split_ruff_output(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
     return items, None
 
 
-def build_json_output(
-    diagnostics: list[dict[str, Any]],
-    guidance_by_code: dict[str, RuleGuidance],
-) -> list[dict[str, Any]]:
-    """Ruff diagnostics unchanged; append guidance only for violations we document."""
-    if not diagnostics:
-        return []
-
-    triggered_codes = sorted(
-        {
-            str(d["code"])
-            for d in diagnostics
-            if d.get("code") in guidance_by_code
-        }
-    )
-    if not triggered_codes:
-        return diagnostics
-
-    rules = {
-        code: {
-            "short": guidance_by_code[code].short,
-            "guidance": guidance_by_code[code].guidance or "",
-        }
-        for code in triggered_codes
-    }
-    return [
-        *diagnostics,
-        {
-            GUIDANCE_JSON_KEY: {
-                "triggered": triggered_codes,
-                "rules": rules,
-            },
-        },
-    ]
-
-
-def build_default_output(diagnostics: list[dict[str, Any]]) -> dict[str, Any]:
-    """Convert ruff diagnostics to the sensors default parser JSON format."""
+def _build_findings_from_diagnostics(diagnostics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert ruff diagnostics to finding dicts (shared logic for all output formats)."""
     cwd = Path.cwd()
-    violations = []
+    findings = []
     for d in diagnostics:
         if not isinstance(d, dict) or "code" not in d:
             continue
@@ -201,14 +165,75 @@ def build_default_output(diagnostics: list[dict[str, Any]]) -> dict[str, Any]:
             file_str = str(Path(filename).relative_to(cwd))
         except ValueError:
             file_str = filename
-        violations.append({
+        findings.append({
             "message": str(d.get("message", "")),
             "severity": "error",
             "file": file_str,
             "line": int(loc.get("row", 0)),
             "rule": str(d.get("code", "")),
         })
-    return {"violations": violations}
+    return findings
+
+
+def build_json_output(
+    diagnostics: list[dict[str, Any]],
+    guidance_by_code: dict[str, RuleGuidance],
+) -> list[dict[str, Any]]:
+    """Ruff diagnostics unchanged; append guidance only for violations we document."""
+    findings = _build_findings_from_diagnostics(diagnostics)
+    if not findings:
+        return []
+
+    triggered_codes = sorted(
+        {f["rule"] for f in findings if f["rule"] in guidance_by_code}
+    )
+    if not triggered_codes:
+        return findings
+
+    rules = {
+        code: {
+            "short": guidance_by_code[code].short,
+            "guidance": guidance_by_code[code].guidance or "",
+        }
+        for code in triggered_codes
+    }
+    return [
+        *findings,
+        {
+            GUIDANCE_JSON_KEY: {
+                "triggered": triggered_codes,
+                "rules": rules,
+            },
+        },
+    ]
+
+
+def build_default_output(
+    diagnostics: list[dict[str, Any]],
+    guidance_by_code: dict[str, RuleGuidance] | None = None,
+) -> dict[str, Any]:
+    """Convert ruff diagnostics to the sensors default parser JSON format (ParsedOutput-aligned)."""
+    guidance_by_code = guidance_by_code or {}
+    findings_list = _build_findings_from_diagnostics(diagnostics)
+
+    result: dict[str, Any] = {"findings": findings_list}
+
+    # Extract and include guidance for triggered rules
+    triggered_codes = sorted(
+        {f["rule"] for f in findings_list if f["rule"] in guidance_by_code}
+    )
+    if triggered_codes:
+        guidance_list = []
+        for code in triggered_codes:
+            entry = guidance_by_code[code]
+            guidance_list.append({
+                "rule": code,
+                "summary": entry.short,
+                "body": entry.guidance or "",
+            })
+        result["guidance"] = guidance_list
+
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -249,7 +274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     if args.sensors_format == "default":
-        print(json.dumps(build_default_output(diagnostics)))
+        print(json.dumps(build_default_output(diagnostics, guidance_by_code=guidance_by_code)))
     else:
         output = build_json_output(diagnostics, guidance_by_code)
         print(json.dumps(output, indent=2))

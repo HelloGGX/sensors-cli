@@ -15,21 +15,40 @@ The parser looks for the **first JSON object** in stdout. Text before and after 
 
 ```json
 {
-  "violations": [
+  "findings": [
     {
       "message": "Unused variable 'x'",
       "severity": "error",
       "file": "src/foo.py",
       "line": 42,
-      "rule": "F841"
+      "column": 9,
+      "rule": "F841",
+      "context": "variable is assigned but never used"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "errorCount",
+      "label": "Errors",
+      "value": 1,
+      "direction": "less"
+    }
+  ],
+  "guidance": [
+    {
+      "rule": "F841",
+      "summary": "Unused variable",
+      "body": "Remove the variable or use it in your code."
     }
   ],
   "score": {
     "value": 1,
-    "direction": "less"
+    "direction": "less",
+    "description": "Issues reported by tool"
   },
   "success": false,
-  "summary": "1 issue found"
+  "summary": "1 issue",
+  "extra": {}
 }
 ```
 
@@ -37,19 +56,28 @@ All fields are optional. Missing ones are derived:
 
 | Field | Derived as |
 |---|---|
-| `violations` | `[]` |
-| `success` | `true` when violations is empty |
+| `findings` | `[]` |
+| `metrics` | `[]` |
+| `guidance` | `[]` |
+| `extra` | `{}` |
+| `success` | `true` when findings is empty |
 | `summary` | `"N issue(s)"` / `"No issues"` |
-| `score.value` | `len(violations)` |
+| `score.value` | `len(findings)` |
 | `score.direction` | `"less"` (lower is better) |
+| `score.description` | `"Issues reported by tool"` |
 
-Each violation object: only `message` is required. `severity` defaults to `"error"`; use `"warning"` or `"info"` for lower-severity items.
+Each finding object: only `message` is required. Other fields (`severity`, `file`, `line`, `column`, `rule`, `context`) are optional and used for formatting and grouping. `severity` defaults to `"error"`; use `"warning"` or `"info"` for lower-severity items.
 
-Use `success`, `summary`, and `score` directly when the tool produces a single metric rather than a list of violations -- e.g. a coverage percentage:
+Use `success`, `summary`, and `score` directly when the tool produces a single metric rather than a list of findings -- e.g. a coverage percentage:
 
 ```json
 {"success": false, "summary": "Coverage 72% (threshold 80%)", "score": {"value": 72, "direction": "more"}}
 ```
+
+The `metrics`, `guidance`, and `extra` sections are optional and primarily useful when:
+- **metrics:** you want to track specific measurements instead of or alongside findings (e.g., coverage percentage, mutation score, error count)
+- **guidance:** you want to provide rule-specific advice tied to findings
+- **extra:** you need to store parser-specific data that doesn't fit the standard model (e.g., per-file coverage tables)
 
 ---
 
@@ -69,8 +97,11 @@ Look at the sample output and determine:
 
 - **Is there a structured format** (JSON, XML, CSV) or plain text?
 - **What signals pass/fail?** (exit code, a word in the output, a count)
-- **What are the individual findings?** (file, line, message, rule ID)
+- **What are the individual findings?** (file, line, message, rule ID, severity, context)
+- **Are there metrics** (counts, percentages, thresholds)?
+- **Is there guidance text** tied to specific rules?
 - **Is there a single score** instead of a list of findings?
+- **Any parser-specific data** that doesn't fit findings/metrics/guidance (store in `extra`)?
 
 Describe your reading to the user before writing any code, and confirm it is correct.
 

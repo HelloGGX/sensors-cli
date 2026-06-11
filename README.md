@@ -161,35 +161,60 @@ Use `parser: default` in your runner config to connect any tool that can emit a 
 
 ```json
 {
-  "violations": [
+  "findings": [
     {
       "message": "Unused variable 'x'",
       "severity": "error",
       "file": "src/foo.py",
       "line": 42,
-      "rule": "F841"
+      "column": 9,
+      "rule": "F841",
+      "context": "x is assigned but never used"
+    }
+  ],
+  "metrics": [
+    {
+      "key": "errorCount",
+      "label": "Errors",
+      "value": 1,
+      "direction": "less"
+    }
+  ],
+  "guidance": [
+    {
+      "rule": "F841",
+      "summary": "Unused variable",
+      "body": "Remove variable or use it."
     }
   ],
   "score": {
     "value": 1,
-    "direction": "less"
+    "direction": "less",
+    "description": "Issues reported by tool"
   },
   "success": false,
-  "summary": "1 issue found"
+  "summary": "1 issue",
+  "extra": {
+    "any": "parser-specific payload"
+  }
 }
 ```
 
-All fields are optional, in particular `success` and `summary`. The parser derives missing values as follows:
+This schema mirrors the `ParsedOutput` model used by built-in parsers. All fields are optional; missing values are derived as follows:
 
 | Field | If absent or null |
 |---|---|
-| `violations` | treated as `[]` |
-| `success` | `true` when `violations` is empty, `false` otherwise |
-| `summary` | `"N issue(s)"` / `"No issues"` derived from violation count |
-| `score.value` | `len(violations)` |
+| `findings` | treated as `[]` |
+| `metrics` | treated as `[]` |
+| `guidance` | treated as `[]` |
+| `extra` | treated as `{}` |
+| `success` | `true` when `findings` is empty, `false` otherwise |
+| `summary` | `"N issue(s)"` / `"No issues"` derived from findings count |
+| `score.value` | `len(findings)` |
 | `score.direction` | `"less"` (lower is better) |
+| `score.description` | `"Issues reported by tool"` |
 
-If `success`, `summary`, or `score` are present, those values are used as-is. This lets tools signal pass/fail independently of the violation list -- for example a coverage tool that reports a single score rather than individual violations.
+`success`, `summary`, and `score` can be set explicitly and are used as-is. This allows tools that do not produce per-finding rows (for example, coverage checks) to report a score directly.
 
 
 ### Example config
@@ -215,7 +240,7 @@ A tool that only reports a count without individual violations:
 A tool with no issues:
 
 ```json
-{"violations": []}
+{"findings": []}
 ```
 
 ## Testing
