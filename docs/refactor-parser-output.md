@@ -135,15 +135,17 @@ changes needed. Unmigrated parsers continue working exactly as before.
 
 For each parser, add `parse()` and delete all legacy methods and tests for those methods.
 
-**Migrated (5/14):**
+**Migrated (7/14):**
 - `eslint` — `parse()` implemented; all legacy methods and tests deleted
+- `stylelint` — `parse()` implemented; all legacy methods and tests deleted
 - `vitest_cov` — `parse()` implemented; all legacy methods and tests deleted
 - `depcruise` — `parse()` implemented; all legacy methods and tests deleted
 - `semgrep` — `parse()` implemented; all legacy methods and tests deleted
 - `stryker` — `parse()` implemented; all legacy methods and tests deleted
+- `tsc` — `parse()` implemented; all legacy methods and tests deleted
 
-**Remaining (9/14):**
-`stylelint`, `ruff`, `tsc`, `import_linter`, `pytest`,
+**Remaining (7/14):**
+`ruff`, `import_linter`, `pytest`,
 `pytest_cov`, `vitest`, `git_diff`, `default`
 
 Migration checklist per parser:

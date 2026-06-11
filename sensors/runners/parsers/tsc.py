@@ -1,9 +1,8 @@
 """TypeScript compiler (tsc) output parser."""
 
 import re
-from datetime import datetime
 
-from sensors.config import RunnerResult, ScoreInfo
+from sensors.config import Finding, Metric, ParsedOutput, ScoreInfo
 
 from .base import OutputParser
 
@@ -35,25 +34,42 @@ _WATCH_COMPLETE_RE = re.compile(
 class TscParser(OutputParser):
     """Parser for TypeScript compiler (tsc) text output."""
 
-    async def parse_output(self, output: str) -> RunnerResult:
+    def parse(self, output: str) -> ParsedOutput:
         try:
             errors = self._parse_errors(output)
             error_count, file_count = self._parse_summary(output, errors)
+            findings = [
+                Finding(
+                    file=e["file"],
+                    line=e["line"],
+                    column=e["column"],
+                    rule=e["code"],
+                    message=e["message"],
+                    severity="error",
+                )
+                for e in errors
+            ]
 
-            return RunnerResult(
-                timestamp=datetime.now(),
+            return ParsedOutput(
                 success=error_count == 0,
-                output={
-                    "errorCount": error_count,
-                    "fileCount": file_count,
-                    "errors": errors,
-                },
+                summary=self._summary_text(error_count, file_count),
+                score=ScoreInfo(
+                    value=error_count,
+                    direction="less",
+                    description="Number of type errors",
+                ),
+                findings=findings,
+                metrics=[
+                    Metric("errorCount", "Errors", error_count),
+                    Metric("fileCount", "Files", file_count),
+                ],
             )
         except Exception as e:
-            return RunnerResult(
-                timestamp=datetime.now(),
+            return ParsedOutput(
                 success=False,
-                output={"parseError": str(e), "raw": output[:500]},
+                summary=f"Parse error: {e}",
+                score=ScoreInfo(value=0, direction="less", description="Number of type errors"),
+                extra={"parseError": str(e), "raw": output[:500]},
             )
 
     def _parse_errors(self, output: str) -> list[dict]:
@@ -86,81 +102,7 @@ class TscParser(OutputParser):
     def is_watch_run_complete(self, line: str) -> bool:
         return bool(_WATCH_COMPLETE_RE.search(line))
 
-    def calculate_score(self, result: RunnerResult) -> ScoreInfo:
-        return ScoreInfo(
-            value=result.output.get("errorCount", 0),
-            direction="less",
-            description="Number of type errors",
-        )
-
-    # -- Details --
-
-    def format_details_terminal(self, result: RunnerResult) -> str:
-        text = self._summary_text(result)
-        if result.success:
-            return f"[green]{text}[/green]"
-        return f"[red]{text}[/red]"
-
-    def format_details_html(self, result: RunnerResult) -> str:
-        text = self._summary_text(result)
-        css = "sensors-success" if result.success else "sensors-error"
-        return f'<span class="{css}">{text}</span>'
-
-    def format_details_llm(self, result: RunnerResult) -> str:
-        return self._summary_text(result)
-
-    # -- Failures --
-
-    def format_failures_terminal(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        errors = result.output.get("errors", [])
-        if not errors:
-            ec = result.output.get("errorCount", 0)
-            return f"[red]{ec} errors (no details available)[/red]"
-        lines = []
-        for e in errors:
-            lines.append(
-                f"  [red]{e['file']}:{e['line']}:{e['column']}[/red] "
-                f"[dim]{e['code']}[/dim] {e['message']}"
-            )
-        return "\n".join(lines)
-
-    def format_failures_html(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        errors = result.output.get("errors", [])
-        if not errors:
-            ec = result.output.get("errorCount", 0)
-            return f'<span class="sensors-error">{ec} errors (no details available)</span>'
-        parts = []
-        for e in errors:
-            parts.append(
-                f'<div class="sensors-violation">'
-                f'<span class="sensors-file">{e["file"]}:{e["line"]}:{e["column"]}</span> '
-                f'<span class="sensors-error">{e["code"]}</span> '
-                f'<span class="sensors-message">{e["message"]}</span>'
-                f'</div>'
-            )
-        return "\n".join(parts)
-
-    def format_failures_llm(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        errors = result.output.get("errors", [])
-        if not errors:
-            ec = result.output.get("errorCount", 0)
-            return f"{ec} errors (no details available)"
-        lines = []
-        for e in errors:
-            lines.append(f"  {e['file']}:{e['line']}:{e['column']} {e['code']} {e['message']}")
-        return "\n".join(lines)
-
-    # -- Helpers --
-
-    def _summary_text(self, result: RunnerResult) -> str:
-        ec = result.output.get("errorCount", 0)
-        fc = result.output.get("fileCount", 0)
+    def _summary_text(self, ec: int, fc: int) -> str:
         if ec == 0:
             return "No errors"
         if fc <= 1:
