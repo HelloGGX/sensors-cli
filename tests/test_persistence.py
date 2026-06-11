@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from sensors.config import Formatted, ScoreInfo, SensorReading
+from sensors.config import Finding, Formatted, ScoreInfo, SensorReading
 from sensors.persistence import (
     HistoryEntry,
+    HistoryRunnerEntry,
     RunnerEntry,
-    RunnerSummary,
     StateEntry,
     StateManager,
 )
@@ -326,8 +326,12 @@ async def test_append_check_history_creates_file():
             timestamp=datetime(2026, 1, 1, 12, 0, 0),
             runner_filter=None,
             runners={
-                "pytest": RunnerSummary(status="failure", score=ScoreInfo(value=3, direction="less")),
-                "eslint": RunnerSummary(status="success", score=None),
+                "pytest": HistoryRunnerEntry(
+                    status="failure",
+                    score={"value": 3, "direction": "less"},
+                    findings=[Finding(message="failing test", file="tests/test_x.py", line=12)],
+                ),
+                "eslint": HistoryRunnerEntry(status="success", score=None),
             },
         )
 
@@ -339,10 +343,12 @@ async def test_append_check_history_creates_file():
 
         record = json.loads(lines[0])
         assert record["timestamp"] == "2026-01-01T12:00:00Z"
-        assert record["runner_filter"] is None
+        assert "runner_filter" not in record
         assert "snapshot_id" not in record
         assert record["runners"]["pytest"]["status"] == "failure"
         assert record["runners"]["pytest"]["score"]["value"] == 3
+        assert "description" not in record["runners"]["pytest"]["score"]
+        assert record["runners"]["pytest"]["findings"][0]["message"] == "failing test"
         assert record["runners"]["eslint"]["status"] == "success"
         assert record["runners"]["eslint"]["score"] is None
 
@@ -359,7 +365,7 @@ async def test_append_check_history_appends_multiple_entries():
             entry = HistoryEntry(
                 timestamp=datetime(2026, 1, 1, 12, i, 0),
                 runner_filter=None,
-                runners={"pytest": RunnerSummary(status="success")},
+                runners={"pytest": HistoryRunnerEntry(status="success")},
             )
             await manager.append_check_history(entry)
 
@@ -380,7 +386,7 @@ async def test_append_check_history_with_runner_filter():
         entry = HistoryEntry(
             timestamp=datetime(2026, 1, 1, 12, 0, 0),
             runner_filter="pytest",
-            runners={"pytest": RunnerSummary(status="success")},
+            runners={"pytest": HistoryRunnerEntry(status="success")},
         )
         await manager.append_check_history(entry)
 
@@ -405,7 +411,7 @@ async def test_save_snapshot_writes_first_history_entry():
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["snapshot_id"] == state.snapshot.snapshot_id
-        assert record["runner_filter"] is None
+        assert "runner_filter" not in record
 
 
 @pytest.mark.asyncio
@@ -425,7 +431,7 @@ async def test_append_check_history_includes_snapshot_id_from_state():
         entry = HistoryEntry(
             timestamp=datetime(2026, 1, 1, 12, 0, 0),
             runner_filter=None,
-            runners={"pytest": RunnerSummary(status="success")},
+            runners={"pytest": HistoryRunnerEntry(status="success")},
         )
         await manager.append_check_history(entry)
 

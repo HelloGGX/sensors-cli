@@ -36,8 +36,8 @@ from sensors.orchestration.control_server import (
 from sensors.orchestration.orchestrator import run_sensors
 from sensors.persistence.models import (
     HistoryEntry,
+    HistoryRunnerEntry,
     RunnerEntry,
-    RunnerSummary,
     SnapshotEntry,
     StateEntry,
 )
@@ -377,7 +377,18 @@ async def _run_check(working_dir: str, runner: str | None, config: str | None) -
         timestamp=ctx.now,
         runner_filter=runner,
         runners={
-            name: RunnerSummary(status=rs.status, score=rs.reading.score if rs.reading else None)
+            name: HistoryRunnerEntry(
+                status=rs.status,
+                score=(
+                    {
+                        "value": rs.reading.score.value,
+                        "direction": rs.reading.score.direction,
+                    }
+                    if rs.reading
+                    else None
+                ),
+                findings=rs.reading.findings if rs.reading else [],
+            )
             for name, rs in ctx.state.runners.items()
         },
     )

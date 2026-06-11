@@ -1,6 +1,7 @@
 """Persistence layer for sensors state management."""
 
 from .models import (
+    HistoryRunnerEntry,
     HistoryEntry,
     RunnerEntry,
     RunnerSummary,
@@ -11,6 +12,7 @@ from .state_manager import StateManager
 
 __all__ = [
     "HistoryEntry",
+    "HistoryRunnerEntry",
     "RunnerSummary",
     "RunnerEntry",
     "StateEntry",

@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from sensors.config.result_types import ScoreInfo, SensorReading
+from sensors.config.result_types import Finding, ScoreInfo, SensorReading
 
 
 class RunnerEntry(BaseModel):
@@ -73,14 +73,32 @@ class SnapshotEntry(BaseModel):
 
 
 class RunnerSummary(BaseModel):
-    """SnapshotEntry of a single runner's state at check time."""
+    """Compact status/score summary for a single runner."""
 
     status: Literal["success", "failure", "below_threshold"] = Field(
         description="Runner status at check time"
     )
+
     score: ScoreInfo | None = Field(
         default=None,
-        description="Score at check time, if available"
+        description="Domain score for summary and trend analysis"
+    )
+
+
+class HistoryRunnerEntry(BaseModel):
+    """Detailed per-runner payload stored in history.jsonl."""
+
+    status: Literal["success", "failure", "below_threshold"] = Field(
+        description="Runner status at check time"
+    )
+    score: dict[Literal["value", "direction"], int | Literal["more", "less"]] | None = Field(
+        default=None,
+        description="Compact score at check time"
+    )
+
+    findings: list[Finding] = Field(
+        default_factory=list,
+        description="Structured findings at check time, if available"
     )
 
 
@@ -98,9 +116,9 @@ class HistoryEntry(BaseModel):
         default=None,
         description="ID of the active snapshot when this check was run; groups checks taken between two snapshots",
     )
-    runners: dict[str, RunnerSummary] = Field(
+    runners: dict[str, HistoryRunnerEntry] = Field(
         default_factory=dict,
-        description="Per-runner status and score at check time"
+        description="Per-runner status, score, and findings at check time"
     )
 
     class Config:

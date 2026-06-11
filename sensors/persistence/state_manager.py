@@ -13,9 +13,9 @@ from sensors.time_util import to_utc_iso, utc_now
 
 from .models import (
     HistoryEntry,
+    HistoryRunnerEntry,
     QueryLogEntry,
     RunnerEntry,
-    RunnerSummary,
     SnapshotEntry,
     StateEntry,
 )
@@ -165,9 +165,17 @@ class StateManager:
             runner_filter=None,
             snapshot_id=current_state.snapshot.snapshot_id,
             runners={
-                name: RunnerSummary(
+                name: HistoryRunnerEntry(
                     status=rs.status,
-                    score=rs.reading.score if rs.reading else None,
+                    score=(
+                        {
+                            "value": rs.reading.score.value,
+                            "direction": rs.reading.score.direction,
+                        }
+                        if rs.reading
+                        else None
+                    ),
+                    findings=rs.reading.findings if rs.reading else [],
                 )
                 for name, rs in current_state.runners.items()
             },
@@ -225,6 +233,8 @@ class StateManager:
         )
         record = entry.model_dump(mode="json")
         record["timestamp"] = to_utc_iso(entry.timestamp)
+        if record.get("runner_filter") is None:
+            record.pop("runner_filter", None)
         if snapshot_id is not None:
             record["snapshot_id"] = snapshot_id
         else:
