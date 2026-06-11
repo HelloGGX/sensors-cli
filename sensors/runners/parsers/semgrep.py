@@ -6,7 +6,7 @@ Parses semgrep --json output into structured results.
 import json
 from typing import Any
 
-from sensors.config import Finding, Metric, ParsedOutput, ScoreInfo
+from sensors.config import Finding, Metric, ScoreInfo, SensorReading
 
 from .base import OutputParser
 
@@ -31,7 +31,7 @@ class SemgrepParser(OutputParser):
     def _extract_json(output: str) -> str:
         """Extract the JSON object from mixed output.
 
-        Semgrep sends progress/summary to stderr and JSON to stdout,
+        Semgrep sends progress/label to stderr and JSON to stdout,
         but the runner captures both together. Find the outermost { } block.
         """
         start = output.find("{")
@@ -42,13 +42,13 @@ class SemgrepParser(OutputParser):
             return output
         return output[start:end + 1]
 
-    def parse(self, output: str) -> ParsedOutput:
-        """Parse semgrep JSON output into ParsedOutput."""
+    def parse(self, output: str) -> SensorReading:
+        """Parse semgrep JSON output into SensorReading."""
         try:
             json_str = self._extract_json(output)
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
-            return ParsedOutput(
+            return SensorReading(
                 success=False,
                 summary=f"Parse error: {e}",
                 score=ScoreInfo(value=0, direction="less", description="Number of semgrep findings"),
@@ -63,7 +63,7 @@ class SemgrepParser(OutputParser):
         finding_count = len(findings)
         error_count = len(errors)
 
-        return ParsedOutput(
+        return SensorReading(
             success=finding_count == 0 and error_count == 0,
             summary=self._summary_text(finding_count, error_count),
             score=ScoreInfo(

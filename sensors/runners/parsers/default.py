@@ -1,13 +1,13 @@
 """Generic JSON output parser.
 
-Expects tools to emit a ParsedOutput-shaped JSON object (see README).
+Expects tools to emit a SensorReading-shaped JSON object (see README).
 Tolerates arbitrary text before and after the JSON object.
 """
 
 import json
 from typing import Any
 
-from sensors.config import Finding, GuidanceBlock, Metric, ParsedOutput, ScoreInfo
+from sensors.config import Finding, GuidanceBlock, Metric, ScoreInfo, SensorReading
 
 from .base import OutputParser
 
@@ -131,17 +131,17 @@ def _score_info(raw_score: Any, findings: list[Finding]) -> ScoreInfo:
 
 
 class DefaultParser(OutputParser):
-    """Parser for tools that emit ParsedOutput-like JSON.
+    """Parser for tools that emit SensorReading-like JSON.
 
     See the README section 'Default parser: Expected output format' for the schema.
     The parser is tolerant of text before and after the JSON object.
     """
 
-    def parse(self, output: str) -> ParsedOutput:
+    def parse(self, output: str) -> SensorReading:
         try:
             data = _extract_json(output)
         except Exception as e:
-            return ParsedOutput(
+            return SensorReading(
                 success=False,
                 summary=f"Parse error: {e}",
                 score=ScoreInfo(value=0, direction="less", description="Issues reported by tool"),
@@ -157,7 +157,7 @@ class DefaultParser(OutputParser):
         summary: str = data["summary"] if data.get("summary") else _derive_summary(findings)
         extra = data.get("extra") if isinstance(data.get("extra"), dict) else {}
 
-        return ParsedOutput(
+        return SensorReading(
             success=success,
             summary=summary,
             score=score,

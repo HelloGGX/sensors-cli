@@ -3,14 +3,14 @@
 import re
 from typing import Any
 
-from sensors.config import Finding, Metric, ParsedOutput, ScoreInfo
+from sensors.config import Finding, Metric, ScoreInfo, SensorReading
 
 from .base import OutputParser
 
 # "Contracts: 2 kept, 1 broken."
 _SUMMARY_RE = re.compile(r"Contracts:\s+(\d+)\s+kept,\s+(\d+)\s+broken")
 
-# "Contract Name KEPT" or "Contract Name BROKEN" (in the summary table)
+# "Contract Name KEPT" or "Contract Name BROKEN" (in the label table)
 _CONTRACT_STATUS_RE = re.compile(r"^(.+?)\s+(KEPT|BROKEN)$", re.MULTILINE)
 
 # Broken contract block: name + dashes + description line + violation lines
@@ -26,11 +26,11 @@ _VIOLATION_ITEM_RE = re.compile(r"-\s+(\S+)\s+->\s+(\S+)(?:\s+\(l\.(\d+)\))?")
 class ImportLinterParser(OutputParser):
     """Parser for import-linter (lint-imports) output."""
 
-    def parse(self, output: str) -> ParsedOutput:
+    def parse(self, output: str) -> SensorReading:
         try:
             return self._do_parse(output)
         except Exception as e:
-            return ParsedOutput(
+            return SensorReading(
                 success=False,
                 summary=f"Parse error: {e}",
                 score=ScoreInfo(
@@ -41,7 +41,7 @@ class ImportLinterParser(OutputParser):
                 extra={"parseError": str(e), "raw": output[:500]},
             )
 
-    def _do_parse(self, output: str) -> ParsedOutput:
+    def _do_parse(self, output: str) -> SensorReading:
         summary = _SUMMARY_RE.search(output)
         if summary:
             kept_count = int(summary.group(1))
@@ -57,7 +57,7 @@ class ImportLinterParser(OutputParser):
 
         violations = self._parse_violations(output)
 
-        # Fall back to counting from violations if summary is missing
+        # Fall back to counting from violations if label is missing
         if not summary:
             broken_count = len({v["contract"] for v in violations})
             kept_count = sum(1 for c in contracts if c["status"] == "KEPT")
@@ -80,7 +80,7 @@ class ImportLinterParser(OutputParser):
             if broken_count == 0
             else f"{broken_count} broken, {kept_count} kept"
         )
-        return ParsedOutput(
+        return SensorReading(
             success=broken_count == 0,
             summary=summary_text,
             score=ScoreInfo(

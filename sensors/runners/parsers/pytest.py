@@ -3,7 +3,7 @@
 import re
 from typing import Any
 
-from sensors.config import Finding, Metric, ParsedOutput, ScoreInfo
+from sensors.config import Finding, Metric, ScoreInfo, SensorReading
 
 from .base import OutputParser
 
@@ -11,7 +11,7 @@ from .base import OutputParser
 class PytestParser(OutputParser):
     """Parser for pytest text output."""
 
-    def parse(self, output: str) -> ParsedOutput:
+    def parse(self, output: str) -> SensorReading:
         text = output.strip()
 
         num_passed = 0
@@ -30,12 +30,12 @@ class PytestParser(OutputParser):
         error_matches = re.findall(r'ERROR collecting', text)
         num_errors = len(error_matches)
 
-        warning_matches = re.findall(r'warnings summary', text, re.IGNORECASE)
+        warning_matches = re.findall(r'warnings label', text, re.IGNORECASE)
         if warning_matches:
-            warning_section = re.search(r'warnings summary.*?(?=\n\n|\n=|$)', text, re.DOTALL | re.IGNORECASE)
+            warning_section = re.search(r'warnings label.*?(?=\n\n|\n=|$)', text, re.DOTALL | re.IGNORECASE)
             if warning_section:
                 warning_lines = [line for line in warning_section.group(0).split('\n')
-                               if line.strip() and not line.strip().startswith('warnings summary')
+                               if line.strip() and not line.strip().startswith('warnings label')
                                and not line.strip().startswith('--')]
                 warning_files = set()
                 for line in warning_lines:
@@ -50,7 +50,7 @@ class PytestParser(OutputParser):
             for failure in failures
         ]
 
-        return ParsedOutput(
+        return SensorReading(
             success=success,
             summary=self._summary_text(num_passed, num_failed, num_errors),
             score=ScoreInfo(
@@ -65,7 +65,7 @@ class PytestParser(OutputParser):
                 Metric("errors", "Errors", num_errors),
                 Metric("warnings", "Warnings", num_warnings),
             ],
-            extra={"summary": self._extract_summary(text)},
+            extra={"label": self._extract_summary(text)},
         )
 
     def _finding_from_failure(self, failure: dict[str, Any]) -> Finding | None:

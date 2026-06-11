@@ -166,7 +166,7 @@ List the top-level directories under the main source root(s) (commonly `src/`, `
 
 ### Presenting findings to the user
 
-Before generating the config, present a mapping summary like this:
+Before generating the config, present a mapping label like this:
 
 ```
 Detected architecture layers:
@@ -373,7 +373,7 @@ Adjust up if the project is large. The goal is that no two sensors fire at exact
 
 ---
 
-## Step 10 — Present the summary
+## Step 10 — Present the label
 
 After creating/updating the files, tell the user:
 - Which sensors were added to `.sensors/<project-name>.sensors.yaml`

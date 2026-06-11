@@ -4,21 +4,21 @@ Output parsers are stateless plugins that handle tool-specific parsing.
 They are injected into the GenericRunner which handles all process management.
 """
 
-from sensors.config import ParsedOutput
+from sensors.config import SensorReading
 
 
 class OutputParser:
     """Base class for output parsers.
 
     Parsers are stateless and focused solely on data transformation:
-    - Parsing raw output into structured ParsedOutput
+    - Parsing raw output into structured SensorReading
     - Detecting watch-mode completion boundaries (optional)
 
     All process management (spawning, watching, intervals) is handled by GenericRunner.
     """
 
-    def parse(self, output: str) -> ParsedOutput:
-        """Parse raw output into structured ParsedOutput."""
+    def parse(self, output: str) -> SensorReading:
+        """Parse raw output into structured SensorReading."""
         raise NotImplementedError
 
     def is_watch_run_complete(self, line: str) -> bool:

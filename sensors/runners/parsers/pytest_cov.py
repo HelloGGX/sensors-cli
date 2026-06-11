@@ -3,7 +3,7 @@
 import re
 from typing import Any
 
-from sensors.config import Metric, ParsedOutput, ScoreInfo
+from sensors.config import Metric, ScoreInfo, SensorReading
 
 from .base import OutputParser
 
@@ -11,7 +11,7 @@ from .base import OutputParser
 class PytestCovParser(OutputParser):
     """Parser for pytest-cov coverage report output."""
 
-    def parse(self, output: str) -> ParsedOutput:
+    def parse(self, output: str) -> SensorReading:
         try:
             text = output.strip()
             files = self._parse_coverage_table(text)
@@ -26,7 +26,7 @@ class PytestCovParser(OutputParser):
                 summary_parts.append(f"{num_failed} failed")
             summary_parts.append(f"{num_passed} passed")
 
-            return ParsedOutput(
+            return SensorReading(
                 success=success,
                 summary=", ".join(summary_parts),
                 score=ScoreInfo(
@@ -51,11 +51,11 @@ class PytestCovParser(OutputParser):
                     "numSkipped": num_skipped,
                     "files": files,
                     "coverageFailure": cov_fail,
-                    "summary": self._extract_summary(text),
+                    "label": self._extract_summary(text),
                 },
             )
         except Exception as e:
-            return ParsedOutput(
+            return SensorReading(
                 success=False,
                 summary=f"Parse error: {e}",
                 score=ScoreInfo(

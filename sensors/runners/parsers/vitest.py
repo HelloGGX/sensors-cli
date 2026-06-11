@@ -2,7 +2,7 @@
 
 import re
 
-from sensors.config import Finding, Metric, ParsedOutput, ScoreInfo
+from sensors.config import Finding, Metric, ScoreInfo, SensorReading
 
 from .base import OutputParser
 
@@ -12,23 +12,23 @@ class VitestParser(OutputParser):
 
     Supports both watch mode (detects test completion) and interval mode.
     In watch mode, delegates all file-watching and rerun logic to vitest.
-    Detects completed runs by looking for the "Tests  X passed/failed" summary line.
+    Detects completed runs by looking for the "Tests  X passed/failed" label line.
     """
 
     def is_watch_run_complete(self, line: str) -> bool:
-        """Detect vitest test summary line indicating a run has completed.
+        """Detect vitest test label line indicating a run has completed.
 
-        Matches the actual summary line which always has a number before passed/failed:
+        Matches the actual label line which always has a number before passed/failed:
           "      Tests  6 passed (6)"
           "      Tests  1 failed | 5 passed (6)"
         Does NOT match status messages like "FAIL  Tests failed. Watching for file changes..."
         """
         return bool(re.search(r'Tests\s+\d+\s+(failed|passed)', line))
 
-    def parse(self, output: str) -> ParsedOutput:
+    def parse(self, output: str) -> SensorReading:
         """Parse Vitest text output into RunnerResult.
 
-        Handles all vitest summary formats:
+        Handles all vitest label formats:
           "Tests  1 failed | 5 passed (6)"  — mixed
           "Tests  6 passed (6)"             — all pass
           "Tests  1 failed (1)"             — all fail (watch mode partial rerun)
@@ -38,7 +38,7 @@ class VitestParser(OutputParser):
         num_passed = 0
         num_failed = 0
 
-        # Match the "Tests" summary line (not "Test Files")
+        # Match the "Tests" label line (not "Test Files")
         tests_line = re.search(r'^\s*Tests\s+(.+)$', text, re.MULTILINE)
         if tests_line:
             line = tests_line.group(1)
@@ -60,7 +60,7 @@ class VitestParser(OutputParser):
 
         success = num_failed == 0
         failures = self._extract_failures(text)
-        return ParsedOutput(
+        return SensorReading(
             success=success,
             summary=self._summary_text(num_passed, num_failed),
             score=ScoreInfo(

@@ -2,7 +2,6 @@ import json
 
 from sensors.runners.parsers.ruff import GUIDANCE_JSON_KEY, RuffParser
 
-
 RUFF_FAILURE_OUTPUT = """\
 B904 Within an except clause, raise exceptions with raise ... from err
   --> sensors/cli.py:26:9

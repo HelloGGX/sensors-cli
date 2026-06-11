@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from rich.console import Console
 
+from sensors.config import ScoreInfo, SensorReading
 from sensors.config.schema import RunnerConfig, RunnerMode
-from sensors.config import FormattedOutput
 from sensors.events import DisplayEvents
-from sensors.persistence.models import RunnerState
+from sensors.persistence.models import RunnerEntry
 from sensors.persistence.state_manager import StateManager
 from sensors.tui.display import DisplayManager
 
@@ -26,17 +26,14 @@ async def state_manager_with_data():
         sm = StateManager(state_file)
 
         now_aware = datetime.now()
-        runner_state = RunnerState(
+        runner_state = RunnerEntry(
             lastRun=now_aware,
             status="success",
-            formatted=FormattedOutput(
-                details_terminal="[green]No issues[/green]",
-                details_html='<span class="sensors-success">No issues</span>',
-                details_llm="No issues",
-                failures_terminal="",
-                failures_html="",
-                failures_llm="",
-            )
+            reading=SensorReading(
+                success=True,
+                summary="No issues",
+                score=ScoreInfo(value=0, direction="less"),
+            ),
         )
 
         await sm.update_state("eslint", runner_state)
@@ -122,7 +119,7 @@ async def test_populate_table_disabled_runner_not_waiting_to_start():
 
 @pytest.mark.asyncio
 async def test_populate_table_reads_formatted_details():
-    """Test that table population reads formatted.details_terminal from state."""
+    """Test that table population reads formatted.summary_terminal from state."""
     with tempfile.TemporaryDirectory() as tmpdir:
         state_file = Path(tmpdir) / "test_state.json"
         sm = StateManager(state_file)
@@ -130,24 +127,26 @@ async def test_populate_table_reads_formatted_details():
         now = datetime.now()
 
         # ESLint with errors
-        eslint_state = RunnerState(
+        eslint_state = RunnerEntry(
             lastRun=now,
             status="failure",
-            formatted=FormattedOutput(
-                details_terminal="[red]2 errors, 1 warning[/red]",
-                details_llm="2 errors, 1 warning",
-            )
+            reading=SensorReading(
+                success=False,
+                summary="2 errors, 1 warning",
+                score=ScoreInfo(value=2, direction="less"),
+            ),
         )
         await sm.update_state("eslint", eslint_state)
 
         # Tests passing
-        test_state = RunnerState(
+        test_state = RunnerEntry(
             lastRun=now,
             status="success",
-            formatted=FormattedOutput(
-                details_terminal="[green]10 passed[/green]",
-                details_llm="10 passed",
-            )
+            reading=SensorReading(
+                success=True,
+                summary="10 passed",
+                score=ScoreInfo(value=0, direction="less"),
+            ),
         )
         await sm.update_state("tests", test_state)
 
@@ -178,7 +177,7 @@ async def test_get_status_icon():
 
 
 def test_format_time_short_today():
-    """Snapshot taken today shows only HH:MM:SS, no date prefix."""
+    """SnapshotEntry taken today shows only HH:MM:SS, no date prefix."""
     display = DisplayManager(StateManager(), update_interval=1.0)
     now = datetime.now()
     result = display._format_time_short(now)
@@ -187,7 +186,7 @@ def test_format_time_short_today():
 
 
 def test_format_time_short_yesterday():
-    """Snapshot taken yesterday is prefixed with 'yesterday'."""
+    """SnapshotEntry taken yesterday is prefixed with 'yesterday'."""
     display = DisplayManager(StateManager(), update_interval=1.0)
     yesterday = datetime.now() - timedelta(days=1)
     result = display._format_time_short(yesterday)
@@ -196,7 +195,7 @@ def test_format_time_short_yesterday():
 
 
 def test_format_time_short_older():
-    """Snapshot older than yesterday shows abbreviated date."""
+    """SnapshotEntry older than yesterday shows abbreviated date."""
     display = DisplayManager(StateManager(), update_interval=1.0)
     older = datetime.now() - timedelta(days=5)
     result = display._format_time_short(older)
@@ -340,9 +339,9 @@ async def test_handle_key_attach_mode_delegates_to_callbacks():
 def test_runner_row_cells_on_check():
     """on_check mode returns a static hint in the details cell."""
     display = DisplayManager(StateManager())
-    from sensors.persistence.models import SensorsState
+    from sensors.persistence.models import StateEntry
 
-    state = SensorsState(lastUpdated=datetime.now(), runners={})
+    state = StateEntry(lastUpdated=datetime.now(), runners={})
     _, _, _, details = display._runner_row_cells("ruff", state, on_check=True)
     assert "Runs on" in details
     assert "sensors check" in details
@@ -378,10 +377,14 @@ async def test_populate_table_extra_runner_not_in_config():
         now = datetime.now()
         await sm.update_state(
             "orphan",
-            RunnerState(
+            RunnerEntry(
                 lastRun=now,
                 status="success",
-                formatted=FormattedOutput(details_terminal="[green]ok[/green]"),
+                reading=SensorReading(
+                    success=True,
+                    summary="ok",
+                    score=ScoreInfo(value=0, direction="less"),
+                ),
             ),
         )
         display = DisplayManager(sm, runner_configs=[])
@@ -418,13 +421,13 @@ async def test_populate_table_triggered_running_overlay():
 @pytest.mark.asyncio
 async def test_populate_table_no_runners_active():
     """Empty config and empty state show a placeholder row."""
-    from sensors.persistence.models import SensorsState
+    from sensors.persistence.models import StateEntry
 
     with tempfile.TemporaryDirectory() as tmpdir:
         sm = StateManager(Path(tmpdir) / "state.json")
         display = DisplayManager(sm, runner_configs=[])
         table = MagicMock()
-        state = SensorsState(lastUpdated=datetime.now(), runners={})
+        state = StateEntry(lastUpdated=datetime.now(), runners={})
         await display._populate_table(table, state=state)
         table.add_row.assert_called_once_with(
             "[dim]No runners active[/dim]", "", "", "", "", "", ""

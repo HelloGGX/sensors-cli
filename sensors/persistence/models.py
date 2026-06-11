@@ -5,10 +5,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from sensors.config.result_types import FormattedOutput, ScoreInfo
+from sensors.config.result_types import ScoreInfo, SensorReading
 
 
-class RunnerState(BaseModel):
+class RunnerEntry(BaseModel):
     """State for a single runner."""
 
     lastRun: datetime = Field(
@@ -21,13 +21,9 @@ class RunnerState(BaseModel):
         default="",
         description="Human-readable mode description (e.g. 'watch', 'every 5s')"
     )
-    formatted: FormattedOutput = Field(
-        default_factory=FormattedOutput,
-        description="Pre-computed formatted output for each client type"
-    )
-    score: ScoreInfo | None = Field(
+    reading: SensorReading | None = Field(
         default=None,
-        description="Numerical score for trend comparison"
+        description="Structured sensor reading with pre-computed formatted output"
     )
 
     class Config:
@@ -56,7 +52,7 @@ class QueryLogEntry(BaseModel):
         }
 
 
-class Snapshot(BaseModel):
+class SnapshotEntry(BaseModel):
     """A point-in-time snapshot of all runner states for comparison."""
 
     snapshot_id: str = Field(
@@ -65,7 +61,7 @@ class Snapshot(BaseModel):
     timestamp: datetime = Field(
         description="When the snapshot was taken"
     )
-    runners: dict[str, RunnerState] = Field(
+    runners: dict[str, RunnerEntry] = Field(
         default_factory=dict,
         description="Runner states at snapshot time"
     )
@@ -76,8 +72,8 @@ class Snapshot(BaseModel):
         }
 
 
-class RunnerCheckSummary(BaseModel):
-    """Snapshot of a single runner's state at check time."""
+class RunnerSummary(BaseModel):
+    """SnapshotEntry of a single runner's state at check time."""
 
     status: Literal["success", "failure", "below_threshold"] = Field(
         description="Runner status at check time"
@@ -88,7 +84,7 @@ class RunnerCheckSummary(BaseModel):
     )
 
 
-class CheckHistoryEntry(BaseModel):
+class HistoryEntry(BaseModel):
     """One record written to history.jsonl on every 'check' command."""
 
     timestamp: datetime = Field(
@@ -102,7 +98,7 @@ class CheckHistoryEntry(BaseModel):
         default=None,
         description="ID of the active snapshot when this check was run; groups checks taken between two snapshots",
     )
-    runners: dict[str, RunnerCheckSummary] = Field(
+    runners: dict[str, RunnerSummary] = Field(
         default_factory=dict,
         description="Per-runner status and score at check time"
     )
@@ -113,17 +109,17 @@ class CheckHistoryEntry(BaseModel):
         }
 
 
-class SensorsState(BaseModel):
+class StateEntry(BaseModel):
     """Overall sensors state containing all runners."""
 
     lastUpdated: datetime = Field(
         description="When the sensors state was last updated"
     )
-    runners: dict[str, RunnerState] = Field(
+    runners: dict[str, RunnerEntry] = Field(
         default_factory=dict,
         description="State for each runner, keyed by runner name"
     )
-    snapshot: Snapshot | None = Field(
+    snapshot: SnapshotEntry | None = Field(
         default=None,
         description="Point-in-time snapshot for before/after comparison"
     )

@@ -35,11 +35,11 @@ from sensors.orchestration.control_server import (
 )
 from sensors.orchestration.orchestrator import run_sensors
 from sensors.persistence.models import (
-    CheckHistoryEntry,
-    RunnerCheckSummary,
-    RunnerState,
-    SensorsState,
-    Snapshot,
+    HistoryEntry,
+    RunnerEntry,
+    RunnerSummary,
+    SnapshotEntry,
+    StateEntry,
 )
 from sensors.persistence.state_manager import StateManager
 from sensors.tui.display import DisplayManager
@@ -97,7 +97,7 @@ def _relativize_runner_configs(
 
 def _runner_description(
     runner_cfg: RunnerConfig,
-    runner_state: RunnerState | None = None,
+    runner_state: RunnerEntry | None = None,
 ) -> str:
     parts = [f"cmd: `{runner_cfg.command}`"]
     if runner_cfg.workingDir:
@@ -108,31 +108,34 @@ def _runner_description(
         parts.append(
             f"commandTimeout: {runner_cfg.commandTimeout}s (0 = no limit)"
         )
-    if runner_state and runner_state.score is not None:
-        direction = "lower is better" if runner_state.score.direction == "less" else "higher is better"
-        desc = runner_state.score.description
+    score = runner_state.reading.score if (runner_state and runner_state.reading) else None
+    if score is not None:
+        direction = "lower is better" if score.direction == "less" else "higher is better"
+        desc = score.description
         if desc:
             parts.append(f"score: {desc} ({direction})")
         else:
-            parts.append(f"score: {runner_state.score.value} ({direction})")
+            parts.append(f"score: {score.value} ({direction})")
     return ", ".join(parts)
 
 
-def _score_delta(runner_name: str, runner_state: RunnerState, snapshot: Snapshot | None) -> str:
-    if runner_state.score is None or snapshot is None:
+def _score_delta(runner_name: str, runner_state: RunnerEntry, snapshot: SnapshotEntry | None) -> str:
+    cur_score = runner_state.reading.score if runner_state.reading else None
+    if cur_score is None or snapshot is None:
         return ""
     snap_runner = snapshot.runners.get(runner_name)
-    if snap_runner is None or snap_runner.score is None:
+    snap_score = snap_runner.reading.score if (snap_runner and snap_runner.reading) else None
+    if snap_score is None:
         return ""
-    cur = runner_state.score.value
-    snap = snap_runner.score.value
+    cur = cur_score.value
+    snap = snap_score.value
     if cur == snap:
         return "Same as snapshot"
     diff = cur - snap
     diff_str = f"(+{diff})" if diff > 0 else f"({diff})"
     improving = (
-        (diff < 0 and runner_state.score.direction == "less")
-        or (diff > 0 and runner_state.score.direction == "more")
+        (diff < 0 and cur_score.direction == "less")
+        or (diff > 0 and cur_score.direction == "more")
     )
     label = "Better than snapshot" if improving else "Worse than snapshot"
     return f"{label} {diff_str}"
@@ -196,9 +199,9 @@ def _make_attach_callbacks(
             return
         if res.get("ok"):
             now = datetime.now().strftime("%H:%M:%S")
-            d._snapshot_status = f"Snapshot requested at {now}"
+            d._snapshot_status = f"SnapshotEntry requested at {now}"
         else:
-            d._snapshot_status = f"Snapshot failed: {res.get('error', res)}"
+            d._snapshot_status = f"SnapshotEntry failed: {res.get('error', res)}"
 
     async def on_clear() -> None:
         res = await rpc_unix(socket_path, "clear")
@@ -225,14 +228,14 @@ def _make_attach_callbacks(
 class CheckContext:
     """Loaded state and config for a ``sensors check`` run."""
 
-    state: SensorsState
+    state: StateEntry
     sensors_config: SensorsConfig | None
     runner_configs: dict[str, RunnerConfig]
     on_check_configs: list[RunnerConfig]
     now: datetime
 
 
-def _runner_status_text(rs: RunnerState) -> str:
+def _runner_status_text(rs: RunnerEntry) -> str:
     if rs.status == "success":
         return "SUCCESS"
     if rs.status == "below_threshold":
@@ -240,7 +243,7 @@ def _runner_status_text(rs: RunnerState) -> str:
     return "FAILURE"
 
 
-def _check_exit_code(state: SensorsState) -> int:
+def _check_exit_code(state: StateEntry) -> int:
     for rs in state.runners.values():
         if rs.status == "failure":
             return 1
@@ -250,7 +253,7 @@ def _check_exit_code(state: SensorsState) -> int:
 
 
 def _print_check_header(
-    state: SensorsState,
+    state: StateEntry,
     sensors_config: SensorsConfig | None,
     now: datetime,
 ) -> None:
@@ -266,13 +269,13 @@ def _print_check_header(
 
 def _print_runner_result(
     name: str,
-    rs: RunnerState,
+    rs: RunnerEntry,
     runner_configs: dict[str, RunnerConfig],
-    state: SensorsState,
+    state: StateEntry,
     now: datetime,
 ) -> None:
     status_text = _runner_status_text(rs)
-    details = rs.formatted.details_llm or "no details"
+    details = (rs.reading.formatted.summary_llm if rs.reading else "") or "no details"
     delta = _score_delta(name, rs, state.snapshot)
     ran_ago = _seconds_ago(rs.lastRun, now)
     line = f"{name}: {status_text} ({details}) [ran {ran_ago}]"
@@ -286,7 +289,7 @@ def _print_runner_result(
             print(f"  prompt: {runner_configs[name].prompt}")
 
     if rs.status == "failure":
-        failures = rs.formatted.failures_llm
+        failures = rs.reading.formatted.failures_llm if rs.reading else ""
         if failures:
             print(failures)
 
@@ -370,11 +373,11 @@ async def _run_check(working_dir: str, runner: str | None, config: str | None) -
     assert ctx is not None  # noqa: S101
 
     sm = _get_state_manager(working_dir, config)
-    history_entry = CheckHistoryEntry(
+    history_entry = HistoryEntry(
         timestamp=ctx.now,
         runner_filter=runner,
         runners={
-            name: RunnerCheckSummary(status=rs.status, score=rs.score)
+            name: RunnerSummary(status=rs.status, score=rs.reading.score if rs.reading else None)
             for name, rs in ctx.state.runners.items()
         },
     )
@@ -543,10 +546,10 @@ def snapshot_command(
 
     res = rpc_unix_sync(socket_path, "snapshot", timeout=10.0)
     if res.get("ok"):
-        typer.echo("Snapshot saved.")
+        typer.echo("SnapshotEntry saved.")
         raise typer.Exit(0)
     err = res.get("error", res)
-    typer.echo(f"Snapshot failed: {err}", err=True)
+    typer.echo(f"SnapshotEntry failed: {err}", err=True)
     raise typer.Exit(1)
 
 

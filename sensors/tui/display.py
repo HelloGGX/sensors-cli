@@ -16,7 +16,7 @@ from rich.table import Table
 
 from sensors.config.schema import RunnerConfig
 from sensors.events import DisplayEvents
-from sensors.persistence.models import RunnerState
+from sensors.persistence.models import RunnerEntry
 from sensors.persistence.state_manager import StateManager
 
 
@@ -173,11 +173,12 @@ class DisplayManager:
         if current_score is None or snapshot is None:
             return "➖"
         snap_runner = snapshot.runners.get(runner_name)
-        if snap_runner is None or snap_runner.score is None:
+        snap_score = snap_runner.reading.score if (snap_runner and snap_runner.reading) else None
+        if snap_score is None:
             return "➖"
 
         cur = current_score.value
-        snap = snap_runner.score.value
+        snap = snap_score.value
         direction = current_score.direction
 
         if cur == snap:
@@ -216,11 +217,12 @@ class DisplayManager:
         if current_score is None or snapshot is None:
             return "", None
         snap_runner = snapshot.runners.get(runner_name)
-        if snap_runner is None or snap_runner.score is None:
+        snap_score = snap_runner.reading.score if (snap_runner and snap_runner.reading) else None
+        if snap_score is None:
             return "", None
 
         cur = current_score.value
-        snap = snap_runner.score.value
+        snap = snap_score.value
         if cur == snap:
             return "", None
 
@@ -252,22 +254,24 @@ class DisplayManager:
         return "[dim]·[/dim]", "", "", "[dim]Runs on `sensors check`[/dim]"
 
     def _triggered_running_row_cells(
-        self, runner_state: RunnerState | None,
+        self, runner_state: RunnerEntry | None,
     ) -> tuple[str, str, str, str]:
         last_run = self._format_time_ago(runner_state.lastRun) if runner_state else ""
         return "[dim]⏳[/dim]", "➖", last_run, "[dim]⏳ Running…[/dim]"
 
     def _state_runner_row_cells(
-        self, runner_name: str, runner_state: RunnerState, state,
+        self, runner_name: str, runner_state: RunnerEntry, state,
     ) -> tuple[str, str, str, str]:
         status_icon = self._get_status_icon(runner_state.status)
         last_run = self._format_time_ago(runner_state.lastRun)
-        details = runner_state.formatted.details_terminal or "[dim]No details[/dim]"
-        delta_str, improving = self._get_score_delta(runner_name, runner_state.score, state.snapshot)
+        reading = runner_state.reading
+        details = (reading.formatted.summary_terminal if reading else "") or "[dim]No details[/dim]"
+        score = reading.score if reading else None
+        delta_str, improving = self._get_score_delta(runner_name, score, state.snapshot)
         if delta_str:
             color = "green" if improving else "red"
             details = f"{details} [{color}]{delta_str}[/{color}]"
-        trend = self._get_trend_indicator(runner_name, runner_state.score, state.snapshot)
+        trend = self._get_trend_indicator(runner_name, score, state.snapshot)
         return status_icon, trend, last_run, details
 
     def _pending_runner_row_cells(self, runner_name: str) -> tuple[str, str, str, str]:
@@ -288,7 +292,7 @@ class DisplayManager:
         runner_name: str,
         state,
         *,
-        runner_state: RunnerState | None = None,
+        runner_state: RunnerEntry | None = None,
         on_check: bool = False,
     ) -> tuple[str, str, str, str]:
         """Build status icon, trend, last run, and details for one table row."""

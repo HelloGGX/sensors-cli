@@ -3,10 +3,7 @@
 import json
 from datetime import datetime
 
-import pytest
-
 from sensors.config import RunnerResult
-from sensors.config.result_types import Finding, GuidanceBlock
 from sensors.runners.parsers.eslint import ESLintParser
 
 # ---------------------------------------------------------------------------

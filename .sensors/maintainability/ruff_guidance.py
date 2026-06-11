@@ -212,7 +212,7 @@ def build_default_output(
     diagnostics: list[dict[str, Any]],
     guidance_by_code: dict[str, RuleGuidance] | None = None,
 ) -> dict[str, Any]:
-    """Convert ruff diagnostics to the sensors default parser JSON format (ParsedOutput-aligned)."""
+    """Convert ruff diagnostics to the sensors default parser JSON format"""
     guidance_by_code = guidance_by_code or {}
     findings_list = _build_findings_from_diagnostics(diagnostics)
 
@@ -228,8 +228,7 @@ def build_default_output(
             entry = guidance_by_code[code]
             guidance_list.append({
                 "rule": code,
-                "summary": entry.short,
-                "body": entry.guidance or "",
+                "body": entry.short + " " + (entry.guidance or ""),
             })
         result["guidance"] = guidance_list
 

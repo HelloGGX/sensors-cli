@@ -1,6 +1,5 @@
 from sensors.runners.parsers.pytest_cov import PytestCovParser
 
-
 SAMPLE_OUTPUT = """\
 ===================================== tests coverage =====================================
 

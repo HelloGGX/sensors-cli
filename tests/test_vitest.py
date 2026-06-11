@@ -1,6 +1,5 @@
 from sensors.runners.parsers import VitestParser
 
-
 VITEST_FAILURE_OUTPUT = """\
 ⎯⎯⎯ Failed Tests 1 ⎯⎯⎯
 

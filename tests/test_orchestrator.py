@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from sensors.config.schema import RunnerConfig, RunnerMode, SensorsConfig
+from sensors.events import DisplayEvents
 from sensors.orchestration.orchestrator import (
     OrchestratorEventType,
     _build_runners,
@@ -19,7 +20,6 @@ from sensors.orchestration.orchestrator import (
     _wire_runner_batch,
 )
 from sensors.persistence.state_manager import StateManager
-from sensors.events import DisplayEvents
 
 
 def _minimal_config(*runners: RunnerConfig) -> SensorsConfig:

@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from sensors.config import Finding, GuidanceBlock, Metric, ParsedOutput, ScoreInfo
+from sensors.config import Finding, GuidanceBlock, Metric, ScoreInfo, SensorReading
 
 from .base import OutputParser
 
@@ -20,14 +20,14 @@ class RuffParser(OutputParser):
     )
     _SUMMARY_RE = re.compile(r'Found (\d+) errors?')
 
-    def parse(self, output: str) -> ParsedOutput:
+    def parse(self, output: str) -> SensorReading:
         try:
             text = output.strip()
             if text.startswith("["):
                 return self._parse_json_output(self._strip_preamble(text))
             return self._parse_text_output(output)
         except Exception as e:
-            return ParsedOutput(
+            return SensorReading(
                 success=False,
                 summary=f"Parse error: {e}",
                 score=ScoreInfo(
@@ -38,7 +38,7 @@ class RuffParser(OutputParser):
                 extra={"parseError": str(e), "raw": output[:500]},
             )
 
-    def _parse_json_output(self, output: str) -> ParsedOutput:
+    def _parse_json_output(self, output: str) -> SensorReading:
         items = json.loads(output)
         if not isinstance(items, list):
             raise ValueError("Expected JSON array from ruff")
@@ -47,7 +47,7 @@ class RuffParser(OutputParser):
         violations = self._violations_from_diagnostics(diagnostics)
         return self._build_parsed_output(violations, guidance_block)
 
-    def _parse_text_output(self, output: str) -> ParsedOutput:
+    def _parse_text_output(self, output: str) -> SensorReading:
         violations = []
         for m in self._VIOLATION_RE.finditer(output):
             violations.append({
@@ -64,7 +64,7 @@ class RuffParser(OutputParser):
         self,
         violations: list[dict[str, Any]],
         guidance_block: dict[str, Any] | None,
-    ) -> ParsedOutput:
+    ) -> SensorReading:
         findings = [
             Finding(
                 rule=v.get("rule"),
@@ -78,7 +78,7 @@ class RuffParser(OutputParser):
         ]
         guidance = self._guidance_blocks(guidance_block)
         error_count = len(findings)
-        return ParsedOutput(
+        return SensorReading(
             success=error_count == 0,
             summary="No issues" if error_count == 0 else f"{error_count} issue{'s' if error_count != 1 else ''}",
             score=ScoreInfo(

@@ -34,9 +34,9 @@ import os
 import subprocess
 import sys
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
-
+from typing import Any
 
 # --- Data model --------------------------------------------------------------
 
@@ -70,7 +70,7 @@ class Report:
 
 def load_report(path: str) -> Report:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         die(f"report not found: {path}")
@@ -229,7 +229,7 @@ def render_table(headers: list[str], rows: list[list[str]], aligns: list[str] | 
     return "\n".join(out)
 
 
-# --- summary -----------------------------------------------------------------
+# --- label -----------------------------------------------------------------
 
 
 def cmd_summary(report: Report, _args: argparse.Namespace) -> None:
@@ -419,7 +419,7 @@ def cmd_files(report: Report, args: argparse.Namespace) -> None:
     if aggs:
         sample = aggs[0].path
         print()
-        print(f"Tip: drill into a file's hotspot lines with, e.g.:")
+        print("Tip: drill into a file's hotspot lines with, e.g.:")
         print(f"  python .sensors/maintainability/query_stryker.py {args.report} hotspots --file {sample}")
 
 

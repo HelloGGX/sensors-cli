@@ -183,7 +183,6 @@ Use `parser: default` in your runner config to connect any tool that can emit a 
   "guidance": [
     {
       "rule": "F841",
-      "summary": "Unused variable",
       "body": "Remove variable or use it."
     }
   ],
@@ -200,7 +199,7 @@ Use `parser: default` in your runner config to connect any tool that can emit a 
 }
 ```
 
-This schema mirrors the `ParsedOutput` model used by built-in parsers. All fields are optional; missing values are derived as follows:
+This schema mirrors the `SensorReading` model used by built-in parsers. All fields are optional; missing values are derived as follows:
 
 | Field | If absent or null |
 |---|---|

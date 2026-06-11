@@ -1,11 +1,7 @@
-"""Tests for GenericFormatter — verifies that ParsedOutput is rendered correctly
+"""Tests for SensorReading.formatted — verifies that readings are formatted correctly
 across all three client styles (terminal, html, llm)."""
 
-import pytest
-
-from sensors.config.result_types import Finding, GuidanceBlock, Metric, ParsedOutput, ScoreInfo
-from sensors.runners.formatter import GenericFormatter
-
+from sensors.config.result_types import Finding, GuidanceBlock, Metric, ScoreInfo, SensorReading
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -14,8 +10,8 @@ from sensors.runners.formatter import GenericFormatter
 _SCORE = ScoreInfo(value=0, direction="less", description="")
 
 
-def _parsed(*, success=True, summary="OK", findings=None, metrics=None, guidance=None):
-    return ParsedOutput(
+def _reading(*, success=True, summary="OK", findings=None, metrics=None, guidance=None):
+    return SensorReading(
         success=success,
         summary=summary,
         score=_SCORE,
@@ -26,60 +22,53 @@ def _parsed(*, success=True, summary="OK", findings=None, metrics=None, guidance
 
 
 # ---------------------------------------------------------------------------
-# Details rendering
+# Summary rendering
 # ---------------------------------------------------------------------------
 
-class TestDetails:
+class TestSummary:
     def test_success_is_green_terminal(self):
-        fmt = GenericFormatter()
-        out = fmt.format(_parsed(success=True, summary="No issues"))
-        assert "[green]No issues[/green]" == out.details_terminal
+        out = _reading(success=True, summary="No issues").formatted
+        assert out.summary_terminal == "[green]No issues[/green]"
 
     def test_failure_is_red_terminal(self):
-        fmt = GenericFormatter()
-        out = fmt.format(_parsed(success=False, summary="2 errors"))
-        assert "[red]2 errors[/red]" == out.details_terminal
+        out = _reading(success=False, summary="2 errors").formatted
+        assert out.summary_terminal == "[red]2 errors[/red]"
 
     def test_success_is_green_html(self):
-        fmt = GenericFormatter()
-        out = fmt.format(_parsed(success=True, summary="No issues"))
-        assert 'class="sensors-success"' in out.details_html
-        assert "No issues" in out.details_html
+        out = _reading(success=True, summary="No issues").formatted
+        assert 'class="sensors-success"' in out.summary_html
+        assert "No issues" in out.summary_html
 
     def test_failure_is_red_html(self):
-        fmt = GenericFormatter()
-        out = fmt.format(_parsed(success=False, summary="2 errors"))
-        assert 'class="sensors-error"' in out.details_html
+        out = _reading(success=False, summary="2 errors").formatted
+        assert 'class="sensors-error"' in out.summary_html
 
     def test_llm_is_plain_text(self):
-        fmt = GenericFormatter()
-        out = fmt.format(_parsed(success=True, summary="No issues"))
-        assert out.details_llm == "No issues"
+        out = _reading(success=True, summary="No issues").formatted
+        assert out.summary_llm == "No issues"
 
     def test_metric_threshold_green_when_above(self):
         """Primary 'more' metric above threshold -> green (success=True)."""
-        parsed = _parsed(
+        reading = _reading(
             success=True,
             summary="85% branch",
             metrics=[Metric("branch", "Branch", 85.0, "%", "more", threshold=80.0)],
         )
-        out = GenericFormatter().format(parsed)
-        assert "[green]" in out.details_terminal
+        assert "[green]" in reading.formatted.summary_terminal
 
     def test_success_true_always_green_regardless_of_metric_threshold(self):
         """success=True means green even if the metric value is below its threshold.
 
-        Color authority is parsed.success, not the metric threshold. Threshold on
+        Color authority is reading.success, not the metric threshold. Threshold on
         a metric is informational only; the runner's config.threshold drives status.
         """
-        parsed = _parsed(
+        reading = _reading(
             success=True,
             summary="60% branch",
             metrics=[Metric("branch", "Branch", 60.0, "%", "more", threshold=80.0)],
         )
-        out = GenericFormatter().format(parsed)
-        assert "[green]" in out.details_terminal
-        assert "[red]" not in out.details_terminal
+        assert "[green]" in reading.formatted.summary_terminal
+        assert "[red]" not in reading.formatted.summary_terminal
 
 
 # ---------------------------------------------------------------------------
@@ -88,16 +77,14 @@ class TestDetails:
 
 class TestFailures:
     def test_success_returns_empty(self):
-        fmt = GenericFormatter()
-        out = fmt.format(_parsed(success=True))
+        out = _reading(success=True).formatted
         assert out.failures_terminal == ""
         assert out.failures_html == ""
         assert out.failures_llm == ""
 
     def test_no_findings_falls_back_to_summary(self):
-        """When there are no findings, the summary is shown as the failure."""
-        fmt = GenericFormatter()
-        out = fmt.format(_parsed(success=False, summary="Parse error: bad JSON"))
+        """When there are no findings, the label is shown as the failure."""
+        out = _reading(success=False, summary="Parse error: bad JSON").formatted
         assert "Parse error: bad JSON" in out.failures_terminal
         assert "Parse error: bad JSON" in out.failures_llm
 
@@ -110,7 +97,7 @@ class TestFailures:
             rule="no-unused-vars",
             severity="error",
         )
-        out = GenericFormatter().format(_parsed(success=False, findings=[finding]))
+        out = _reading(success=False, findings=[finding]).formatted
         assert "/app/src/foo.ts" in out.failures_terminal
         assert "10" in out.failures_terminal
         assert "no-unused-vars" in out.failures_terminal
@@ -126,7 +113,7 @@ class TestFailures:
             rule="no-console",
             severity="warning",
         )
-        out = GenericFormatter().format(_parsed(success=False, findings=[finding]))
+        out = _reading(success=False, findings=[finding]).formatted
         assert "[yellow]" in out.failures_terminal
 
     def test_finding_rendered_in_html(self):
@@ -138,7 +125,7 @@ class TestFailures:
             rule="no-undef",
             severity="error",
         )
-        out = GenericFormatter().format(_parsed(success=False, findings=[finding]))
+        out = _reading(success=False, findings=[finding]).formatted
         assert "sensors-file" in out.failures_html
         assert "sensors-rule" in out.failures_html
         assert "sensors-violation" in out.failures_html
@@ -154,7 +141,7 @@ class TestFailures:
             rule="no-undef",
             severity="error",
         )
-        out = GenericFormatter().format(_parsed(success=False, findings=[finding]))
+        out = _reading(success=False, findings=[finding]).formatted
         assert "/app/src/foo.ts" in out.failures_llm
         assert "no-undef" in out.failures_llm
         # no markup
@@ -168,7 +155,7 @@ class TestFailures:
             severity="error",
             context="Circular dependency detected",
         )
-        out = GenericFormatter().format(_parsed(success=False, findings=[finding]))
+        out = _reading(success=False, findings=[finding]).formatted
         assert "Circular dependency detected" in out.failures_terminal
 
     def test_guidance_rendered_in_terminal(self):
@@ -176,7 +163,7 @@ class TestFailures:
             rule="no-explicit-any",
             body="Use a specific type instead of any.",
         )
-        out = GenericFormatter().format(_parsed(success=False, guidance=[guidance]))
+        out = _reading(success=False, guidance=[guidance]).formatted
         assert "no-explicit-any" in out.failures_terminal
         assert "Use a specific type" in out.failures_terminal
 
@@ -185,19 +172,19 @@ class TestFailures:
             rule="RUF001",
             body="Replace with ASCII equivalent.",
         )
-        out = GenericFormatter().format(_parsed(success=False, guidance=[guidance]))
+        out = _reading(success=False, guidance=[guidance]).formatted
         assert "RUF001" in out.failures_terminal
         assert "Replace with ASCII equivalent." in out.failures_terminal
 
     def test_guidance_rendered_in_html(self):
         guidance = GuidanceBlock(rule="no-console", body="Use logger instead.")
-        out = GenericFormatter().format(_parsed(success=False, guidance=[guidance]))
+        out = _reading(success=False, guidance=[guidance]).formatted
         assert "sensors-guidance" in out.failures_html
         assert "no-console" in out.failures_html
 
     def test_guidance_rendered_in_llm(self):
         guidance = GuidanceBlock(rule="no-console", body="Use logger instead.")
-        out = GenericFormatter().format(_parsed(success=False, guidance=[guidance]))
+        out = _reading(success=False, guidance=[guidance]).formatted
         assert "no-console" in out.failures_llm
         assert "Use logger instead." in out.failures_llm
         assert "[" not in out.failures_llm
@@ -207,6 +194,6 @@ class TestFailures:
             Finding(file="a.ts", line=1, message="err1", severity="error"),
             Finding(file="b.ts", line=2, message="err2", severity="warning"),
         ]
-        out = GenericFormatter().format(_parsed(success=False, findings=findings))
+        out = _reading(success=False, findings=findings).formatted
         assert "a.ts" in out.failures_terminal
         assert "b.ts" in out.failures_terminal

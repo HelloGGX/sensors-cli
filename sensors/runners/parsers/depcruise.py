@@ -2,7 +2,7 @@
 
 import re
 
-from sensors.config import Finding, Metric, ParsedOutput, ScoreInfo
+from sensors.config import Finding, Metric, ScoreInfo, SensorReading
 
 from .base import OutputParser
 
@@ -25,7 +25,7 @@ _SUMMARY_RE = re.compile(
 class DepcruiseParser(OutputParser):
     """Parser for dependency-cruiser --output-type err-long output."""
 
-    def parse(self, output: str) -> ParsedOutput:
+    def parse(self, output: str) -> SensorReading:
         try:
             violations = self._extract_violations(output)
             summary_match = _SUMMARY_RE.search(output)
@@ -46,7 +46,7 @@ class DepcruiseParser(OutputParser):
                 for v in violations
             ]
 
-            return ParsedOutput(
+            return SensorReading(
                 success=error_count == 0,
                 summary=self._summary_text(error_count, warning_count),
                 score=ScoreInfo(
@@ -61,7 +61,7 @@ class DepcruiseParser(OutputParser):
                 ],
             )
         except Exception as e:
-            return ParsedOutput(
+            return SensorReading(
                 success=False,
                 summary=f"Parse error: {e}",
                 score=ScoreInfo(value=0, direction="less", description="Number of dependency violations"),

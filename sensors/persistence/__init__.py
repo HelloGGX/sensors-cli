@@ -1,19 +1,19 @@
 """Persistence layer for sensors state management."""
 
 from .models import (
-    CheckHistoryEntry,
-    RunnerCheckSummary,
-    RunnerState,
-    SensorsState,
-    Snapshot,
+    HistoryEntry,
+    RunnerEntry,
+    RunnerSummary,
+    SnapshotEntry,
+    StateEntry,
 )
 from .state_manager import StateManager
 
 __all__ = [
-    "CheckHistoryEntry",
-    "RunnerCheckSummary",
-    "RunnerState",
-    "SensorsState",
-    "Snapshot",
+    "HistoryEntry",
+    "RunnerSummary",
+    "RunnerEntry",
+    "StateEntry",
+    "SnapshotEntry",
     "StateManager",
 ]

@@ -14,16 +14,13 @@ import shlex
 from datetime import datetime
 from pathlib import Path
 
-from sensors.config import FormattedOutput, ParsedOutput, RunnerResult, ScoreInfo
+from sensors.config import Formatted, RunnerResult, SensorReading
 from sensors.config.schema import RunnerConfig, RunnerMode
-from sensors.persistence.models import RunnerState
+from sensors.persistence.models import RunnerEntry
 from sensors.persistence.state_manager import StateManager
-from sensors.runners.formatter import GenericFormatter
 from sensors.runners.parsers.base import OutputParser
 
 logger = logging.getLogger(__name__)
-
-_formatter = GenericFormatter()
 
 # When commandTimeout is omitted (None), wait this long before killing the subprocess.
 # Previously a hardcoded 300s caused long jobs (e.g. Stryker) to never persist state.
@@ -104,97 +101,68 @@ class GenericRunner:
         if self.rerun_event is not None:
             self.rerun_event.set()
 
-    async def on_result(self, result: RunnerResult, parsed: ParsedOutput | None = None) -> None:
+    async def on_result(self, result: RunnerResult, parsed: SensorReading | None = None) -> None:
         """Handle a new runner result by persisting to state manager."""
         if not self.state_manager:
             return
-        formatted, score, status = self._compute_outcome(result, parsed)
-        formatted, status = self._apply_threshold(formatted, score, status)
+        reading, status = self._compute_outcome(result, parsed)
+        reading, status = self._apply_threshold(reading, status)
         await self.state_manager.update_state(
             self.config.name,
-            RunnerState(
+            RunnerEntry(
                 lastRun=result.timestamp,
-                status=status,
+                status=status,  # type: ignore[arg-type]
                 mode=self._mode_label(),
-                formatted=formatted,
-                score=score,
+                reading=reading,
             ),
         )
 
     def _compute_outcome(
-        self, result: RunnerResult, parsed: ParsedOutput | None
-    ) -> tuple[FormattedOutput, ScoreInfo, str]:
-        """Return (formatted, score, status) for a completed run."""
+        self, result: RunnerResult, parsed: SensorReading | None
+    ) -> tuple[SensorReading, str]:
+        """Return (reading, status) for a completed run."""
         if result.output.get("sensorsCommandTimeout"):
-            return self._timeout_outcome(result)
-        formatted, score = self._format_and_score(parsed, result)
-        status = "success" if result.success else "failure"
-        return formatted, score, status
+            return self._timeout_outcome(result), "failure"
+        if parsed is not None:
+            return parsed, "success" if result.success else "failure"
+        err = result.output.get("parseError", "Unknown error")
+        return SensorReading.from_error(f"Error: {err}"), "failure"
 
     @staticmethod
-    def _timeout_outcome(result: RunnerResult) -> tuple[FormattedOutput, ScoreInfo, str]:
-        """Return outcome for a run that hit the command timeout."""
+    def _timeout_outcome(result: RunnerResult) -> SensorReading:
+        """Return a failed reading for a run that hit the command timeout."""
         limit = result.output.get("sensorsTimeoutSeconds")
         msg = f"Command timed out after {limit}s" if limit is not None else "Command timed out"
-        formatted = FormattedOutput(
-            details_terminal=f"[red]{msg}[/red]",
-            details_html=f'<span class="sensors-error">{msg}</span>',
-            details_llm=msg,
-            failures_terminal=f"  [red]{msg}[/red]",
-            failures_html=f'<span class="sensors-error">{msg}</span>',
-            failures_llm=msg,
-        )
-        score = ScoreInfo(value=0, direction="more", description="Last run did not finish (timeout)")
-        return formatted, score, "failure"
-
-    @staticmethod
-    def _format_and_score(
-        parsed: ParsedOutput | None, result: RunnerResult
-    ) -> tuple[FormattedOutput, ScoreInfo]:
-        """Return (formatted, score) for a successfully executed run."""
-        if parsed is not None:
-            return _formatter.format(parsed), parsed.score
-        err = result.output.get("parseError", "Unknown error")
-        msg = f"Error: {err}"
-        return (
-            FormattedOutput(
-                details_terminal=f"[red]{msg}[/red]",
-                details_html=f'<span class="sensors-error">{msg}</span>',
-                details_llm=msg,
-            ),
-            ScoreInfo(value=0, direction="less", description="Infrastructure error"),
-        )
+        return SensorReading.from_error(msg)
 
     def _apply_threshold(
-        self, formatted: FormattedOutput, score: ScoreInfo, status: str
-    ) -> tuple[FormattedOutput, str]:
+        self, reading: SensorReading, status: str
+    ) -> tuple[SensorReading, str]:
         """Downgrade status to below_threshold and recolor formatted output if needed.
 
         Checks config.threshold first (explicit runner override), then falls back
         to score.threshold (parser-declared default, e.g. 80% for coverage).
         """
         if status != "success":
-            return formatted, status
+            return reading, status
+        score = reading.score
         threshold = self.config.threshold if self.config.threshold is not None else score.threshold
         if threshold is None:
-            return formatted, status
+            return reading, status
         below = score.value < threshold if score.direction == "more" else score.value > threshold
         if not below:
-            return formatted, status
+            return reading, status
         note = f"below target threshold of {threshold:g}"
-        # Use the plain LLM text as the base so we can re-wrap with yellow cleanly.
-        summary = formatted.details_llm
-        return (
-            FormattedOutput(
-                details_terminal=f"[yellow]{summary} ({note})[/yellow]",
-                details_html=f'<span class="sensors-warn">{summary} ({note})</span>',
-                details_llm=f"{summary} ({note})",
-                failures_terminal=formatted.failures_terminal,
-                failures_html=formatted.failures_html,
-                failures_llm=formatted.failures_llm,
-            ),
-            "below_threshold",
+        summary = reading.formatted.summary_llm
+        new_formatted = Formatted(
+            summary_terminal=f"[yellow]{summary} ({note})[/yellow]",
+            summary_html=f'<span class="sensors-warn">{summary} ({note})</span>',
+            summary_llm=f"{summary} ({note})",
+            failures_terminal=reading.formatted.failures_terminal,
+            failures_html=reading.formatted.failures_html,
+            failures_llm=reading.formatted.failures_llm,
         )
+        return reading.model_copy(update={"formatted": new_formatted}), "below_threshold"
 
     def _mode_label(self) -> str:
         """Return a human-readable label for the runner's current mode."""
@@ -248,7 +216,7 @@ class GenericRunner:
             },
         )
 
-    async def _parse_input(self, raw: str) -> tuple[ParsedOutput, RunnerResult]:
+    async def _parse_input(self, raw: str) -> tuple[SensorReading, RunnerResult]:
         """Parse raw output via the parser's parse() method."""
         parsed = self.parser.parse(raw)
         result = RunnerResult(timestamp=datetime.now(), success=parsed.success, output={})

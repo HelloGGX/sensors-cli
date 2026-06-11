@@ -303,7 +303,7 @@ Replace `uv run` with the detected runner prefix from Step 2 where applicable (n
 
 ---
 
-## Step 11 — Present the summary
+## Step 11 — Present the label
 
 After creating/updating the files, tell the user:
 - Which sensors were added to `.sensors/<project-name>.sensors.yaml`

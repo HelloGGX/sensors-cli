@@ -60,14 +60,14 @@ All fields are optional. Missing ones are derived:
 | `guidance` | `[]` |
 | `extra` | `{}` |
 | `success` | `true` when findings is empty |
-| `summary` | `"N issue(s)"` / `"No issues"` |
+| `label` | `"N issue(s)"` / `"No issues"` |
 | `score.value` | `len(findings)` |
 | `score.direction` | `"less"` (lower is better) |
 | `score.description` | `"Issues reported by tool"` |
 
 Each finding object: only `message` is required. Other fields (`severity`, `file`, `line`, `column`, `rule`, `context`) are optional and used for formatting and grouping. `severity` defaults to `"error"`; use `"warning"` or `"info"` for lower-severity items.
 
-Use `success`, `summary`, and `score` directly when the tool produces a single metric rather than a list of findings -- e.g. a coverage percentage:
+Use `success`, `label`, and `score` directly when the tool produces a single metric rather than a list of findings -- e.g. a coverage percentage:
 
 ```json
 {"success": false, "summary": "Coverage 72% (threshold 80%)", "score": {"value": 72, "direction": "more"}}

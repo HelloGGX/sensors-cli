@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sensors.config import ScoreInfo, SensorReading
 from sensors.config.schema import RunnerConfig, RunnerMode
-from sensors.config import ParsedOutput, RunnerResult, ScoreInfo
 from sensors.persistence.state_manager import StateManager
 from sensors.runners.generic import GenericRunner
 from sensors.runners.parsers.base import OutputParser
@@ -26,11 +26,11 @@ class _WatchParser(OutputParser):
     def is_watch_run_complete(self, line: str) -> bool:
         return line == self.complete_marker
 
-    def parse(self, output: str) -> ParsedOutput:
+    def parse(self, output: str) -> SensorReading:
         if self.fail_parse:
             raise ValueError("parse failed")
         self.parsed_outputs.append(output)
-        return ParsedOutput(
+        return SensorReading(
             success=True,
             summary=f"{output.count(chr(10)) + 1} lines",
             score=ScoreInfo(value=0, direction="less", description="n/a"),

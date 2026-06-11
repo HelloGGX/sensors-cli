@@ -3,24 +3,24 @@
 from .loader import ConfigLoadError, load_config, load_config_sync
 from .result_types import (
     Finding,
-    FormattedOutput,
+    Formatted,
     GuidanceBlock,
     Metric,
-    ParsedOutput,
     RunnerResult,
     ScoreInfo,
+    SensorReading,
 )
 from .schema import RunnerConfig, RunnerMode, SensorsConfig
 
 __all__ = [
     "ConfigLoadError",
     "Finding",
-    "FormattedOutput",
+    "Formatted",
     "GuidanceBlock",
     "load_config",
     "load_config_sync",
     "Metric",
-    "ParsedOutput",
+    "SensorReading",
     "RunnerResult",
     "ScoreInfo",
     "SensorsConfig",

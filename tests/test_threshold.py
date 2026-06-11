@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from sensors.config import Formatted, ScoreInfo, SensorReading
 from sensors.config.schema import RunnerConfig, RunnerMode
-from sensors.config import FormattedOutput, ParsedOutput, RunnerResult, ScoreInfo
-from sensors.persistence.models import RunnerState
+from sensors.persistence.models import RunnerEntry
 from sensors.persistence.state_manager import StateManager
 from sensors.runners.generic import GenericRunner
 from sensors.runners.parsers.base import OutputParser
@@ -16,14 +16,14 @@ from sensors.tui.display import DisplayManager
 
 
 class _FakeParser(OutputParser):
-    """Minimal parser that returns a fixed ParsedOutput."""
+    """Minimal parser that returns a fixed SensorReading."""
 
     def __init__(self, score_value: int, direction: str = "more"):
         self._score_value = score_value
         self._direction = direction
 
-    def parse(self, output: str) -> ParsedOutput:
-        return ParsedOutput(
+    def parse(self, output: str) -> SensorReading:
+        return SensorReading(
             success=True,
             summary=f"coverage: {self._score_value}%",
             score=ScoreInfo(
@@ -60,9 +60,9 @@ async def test_on_result_below_threshold_more_direction():
         state = await sm.read_state()
         rs = state.runners["coverage"]
         assert rs.status == "below_threshold"
-        assert "below target threshold of 80" in rs.formatted.details_llm
-        assert "[yellow]" in rs.formatted.details_terminal
-        assert "below target threshold of 80" in rs.formatted.details_terminal
+        assert "below target threshold of 80" in rs.reading.formatted.summary_llm
+        assert "[yellow]" in rs.reading.formatted.summary_terminal
+        assert "below target threshold of 80" in rs.reading.formatted.summary_terminal
 
 
 @pytest.mark.asyncio
@@ -102,7 +102,7 @@ async def test_on_result_below_threshold_less_direction():
         state = await sm.read_state()
         rs = state.runners["violations"]
         assert rs.status == "below_threshold"
-        assert "below target threshold of 5" in rs.formatted.details_llm
+        assert "below target threshold of 5" in rs.reading.formatted.summary_llm
 
 
 @pytest.mark.asyncio
@@ -113,8 +113,8 @@ async def test_score_threshold_fallback_no_config_threshold():
         cfg = _make_config(threshold=None)
 
         class _CovParser(OutputParser):
-            def parse(self, output: str) -> ParsedOutput:
-                return ParsedOutput(
+            def parse(self, output: str) -> SensorReading:
+                return SensorReading(
                     success=True,
                     summary="70% coverage",
                     score=ScoreInfo(value=70, direction="more", description="cov", threshold=80),
@@ -127,8 +127,8 @@ async def test_score_threshold_fallback_no_config_threshold():
         state = await sm.read_state()
         rs = state.runners["coverage"]
         assert rs.status == "below_threshold"
-        assert "[yellow]" in rs.formatted.details_terminal
-        assert "below target threshold of 80" in rs.formatted.details_llm
+        assert "[yellow]" in rs.reading.formatted.summary_terminal
+        assert "below target threshold of 80" in rs.reading.formatted.summary_llm
 
 
 @pytest.mark.asyncio
@@ -156,7 +156,7 @@ async def test_on_result_failure_not_converted_to_below_threshold():
 
         # Override the parser to return failure so on_result sees success=False.
         class _FailParser(_FakeParser):
-            def parse(self, output: str) -> ParsedOutput:
+            def parse(self, output: str) -> SensorReading:
                 p = super().parse(output)
                 p.success = False
                 return p
@@ -175,14 +175,18 @@ async def test_display_below_threshold_shows_yellow_circle():
     with tempfile.TemporaryDirectory() as tmpdir:
         sm = StateManager(Path(tmpdir) / "state.json")
 
-        rs = RunnerState(
+        rs = RunnerEntry(
             lastRun=datetime.now(),
             status="below_threshold",
-            formatted=FormattedOutput(
-                details_terminal="coverage: 75% (below target threshold of 80)",
-                details_llm="coverage: 75% (below target threshold of 80)",
+            reading=SensorReading(
+                success=True,
+                summary="coverage: 75% (below target threshold of 80)",
+                score=ScoreInfo(value=75, direction="more", description="coverage %"),
+                formatted=Formatted(
+                    summary_terminal="coverage: 75% (below target threshold of 80)",
+                    summary_llm="coverage: 75% (below target threshold of 80)",
+                ),
             ),
-            score=ScoreInfo(value=75, direction="more", description="coverage %"),
         )
         await sm.update_state("coverage", rs)
 

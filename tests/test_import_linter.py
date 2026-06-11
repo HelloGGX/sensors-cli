@@ -1,6 +1,5 @@
 from sensors.runners.parsers.import_linter import ImportLinterParser
 
-
 FAILURE_OUTPUT = """\
 ---------
 Contracts

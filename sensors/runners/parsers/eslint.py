@@ -3,7 +3,7 @@
 import json
 from typing import Any
 
-from sensors.config import Finding, GuidanceBlock, Metric, ParsedOutput, ScoreInfo
+from sensors.config import Finding, GuidanceBlock, Metric, ScoreInfo, SensorReading
 
 from .base import OutputParser
 
@@ -11,12 +11,12 @@ from .base import OutputParser
 class ESLintParser(OutputParser):
     """Parser for ESLint JSON output."""
 
-    def parse(self, output: str) -> ParsedOutput:
-        """Parse ESLint --format json output into ParsedOutput."""
+    def parse(self, output: str) -> SensorReading:
+        """Parse ESLint --format json output into SensorReading."""
         try:
             data = json.loads(self._strip_preamble(output))
         except json.JSONDecodeError as e:
-            return ParsedOutput(
+            return SensorReading(
                 success=False,
                 summary=f"Parse error: {e}",
                 score=ScoreInfo(value=0, direction="less", description="Number of lint issues"),
@@ -27,7 +27,7 @@ class ESLintParser(OutputParser):
         findings = self._build_findings(file_list)
         guidance = self._build_guidance(triggered_rules_raw)
 
-        return ParsedOutput(
+        return SensorReading(
             success=error_count == 0 and warning_count == 0,
             summary=self._summary_text(error_count, warning_count),
             score=ScoreInfo(

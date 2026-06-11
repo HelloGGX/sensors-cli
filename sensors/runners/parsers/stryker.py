@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from typing import Any, Final
 
-from sensors.config import Metric, ParsedOutput, ScoreInfo
+from sensors.config import Metric, ScoreInfo, SensorReading
 
 from .base import OutputParser
 
@@ -72,11 +72,11 @@ def _count_mutant_statuses(files: dict[str, Any]) -> dict[str, int]:
 class StrykerParser(OutputParser):
     """Parser for Stryker / mutation-testing-elements JSON report files."""
 
-    def parse(self, output: str) -> ParsedOutput:
+    def parse(self, output: str) -> SensorReading:
         try:
             text = output.strip()
             if not text:
-                return ParsedOutput(
+                return SensorReading(
                     success=False,
                     summary="Parse error: empty output",
                     score=ScoreInfo(value=0, direction="more", description="Mutation score (% of covered)"),
@@ -85,7 +85,7 @@ class StrykerParser(OutputParser):
 
             data = json.loads(text)
             if not isinstance(data, dict):
-                return ParsedOutput(
+                return SensorReading(
                     success=False,
                     summary="Parse error: expected JSON object",
                     score=ScoreInfo(value=0, direction="more", description="Mutation score (% of covered)"),
@@ -93,7 +93,7 @@ class StrykerParser(OutputParser):
                 )
             files = data.get("files")
             if not isinstance(files, dict):
-                return ParsedOutput(
+                return SensorReading(
                     success=False,
                     summary="Parse error: missing or invalid 'files'",
                     score=ScoreInfo(value=0, direction="more", description="Mutation score (% of covered)"),
@@ -120,7 +120,7 @@ class StrykerParser(OutputParser):
                 f"{detected}/{valid} valid)"
             )
 
-            return ParsedOutput(
+            return SensorReading(
                 success=True,
                 summary=summary,
                 score=ScoreInfo(
@@ -153,14 +153,14 @@ class StrykerParser(OutputParser):
                 ],
             )
         except json.JSONDecodeError as e:
-            return ParsedOutput(
+            return SensorReading(
                 success=False,
                 summary=f"Parse error: {e}",
                 score=ScoreInfo(value=0, direction="more", description="Mutation score (% of covered)"),
                 extra={"parseError": str(e)},
             )
         except Exception as e:
-            return ParsedOutput(
+            return SensorReading(
                 success=False,
                 summary=f"Parse error: {e}",
                 score=ScoreInfo(value=0, direction="more", description="Mutation score (% of covered)"),

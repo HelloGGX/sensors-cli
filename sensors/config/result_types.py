@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic.dataclasses import dataclass as pydantic_dataclass
 
 
 class ScoreInfo(BaseModel):
@@ -48,24 +48,24 @@ class RunnerResult(BaseModel):
         }
 
 
-class FormattedOutput(BaseModel):
+class Formatted(BaseModel):
     """Pre-computed formatted strings for each client type.
 
     Populated by the output parser at write time so consumers
     never need to load parsers.
     """
 
-    details_terminal: str = Field(
+    summary_terminal: str = Field(
         default="",
-        description="Short summary with Rich markup for terminal display"
+        description="Short label with Rich markup for terminal display"
     )
-    details_html: str = Field(
+    summary_html: str = Field(
         default="",
-        description="Short summary as HTML for web dashboards"
+        description="Short label as HTML for web dashboards"
     )
-    details_llm: str = Field(
+    summary_llm: str = Field(
         default="",
-        description="Short summary as plain text for LLM/agent consumption"
+        description="Short label as plain text for LLM/agent consumption"
     )
     failures_terminal: str = Field(
         default="",
@@ -82,11 +82,11 @@ class FormattedOutput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Structured parser output types (new interface — Step 1 of refactor)
+# Structured parser output types
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@pydantic_dataclass
 class Finding:
     """A single violation, error, test failure, or contract breach."""
 
@@ -106,7 +106,7 @@ class Finding:
     context: str | None = None
 
 
-@dataclass
+@pydantic_dataclass
 class Metric:
     """A single named numeric value (counts, percentages, line totals)."""
 
@@ -121,7 +121,7 @@ class Metric:
     threshold: float | None = None
 
 
-@dataclass
+@pydantic_dataclass
 class GuidanceBlock:
     """A block of guidance text associated with a triggered rule."""
 
@@ -129,19 +129,143 @@ class GuidanceBlock:
     body: str                    # multi-line explanation
 
 
-@dataclass
-class ParsedOutput:
-    """Structured result returned by a parser. Replaces dict[str, Any] in RunnerResult."""
+class SensorReading(BaseModel):
+    """Structured result returned by a parser."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     success: bool
     summary: str        # plain-text one-liner, e.g. "2 errors, 1 warning" or "72% coverage"
-    score: ScoreInfo    # basis of trend comparison and sometimes success/failure determination
+    score: ScoreInfo  # basis of trend comparison and sometimes success/failure determination
 
-    findings: list[Finding] = field(default_factory=list)
+    findings: list[Finding] = Field(default_factory=list)
     # TODO: It seems like we are not reading the metrics anywhere at the moment?!
-    metrics: list[Metric] = field(default_factory=list)
-    guidance: list[GuidanceBlock] = field(default_factory=list)
+    metrics: list[Metric] = Field(default_factory=list)
+    guidance: list[GuidanceBlock] = Field(default_factory=list)
 
     # Escape hatch for parser-specific data that does not fit the model above.
-    # GenericFormatter ignores this field.
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    formatted: Formatted = Field(default_factory=Formatted)
+
+    @model_validator(mode="after")
+    def _populate_formatted(self) -> SensorReading:
+        if not self.formatted.summary_llm:
+            self.formatted = _build_formatted(self)
+        return self
+
+    @classmethod
+    def from_error(cls, message: str) -> SensorReading:
+        """Produce a minimal failed reading for infrastructure errors (timeout, etc.)."""
+        return cls(
+            success=False,
+            summary=message,
+            score=ScoreInfo(value=0, direction="less", description="Infrastructure error"),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Formatting logic (moved from sensors/runners/formatter.py)
+# ---------------------------------------------------------------------------
+
+
+def _build_formatted(reading: SensorReading) -> Formatted:
+    return Formatted(
+        summary_terminal=_summary(reading, "terminal"),
+        summary_html=_summary(reading, "html"),
+        summary_llm=_summary(reading, "llm"),
+        failures_terminal=_failures(reading, "terminal"),
+        failures_html=_failures(reading, "html"),
+        failures_llm=_failures(reading, "llm"),
+    )
+
+
+def _apply_color(text: str, color: str, style: str) -> str:
+    if style == "terminal":
+        return f"[{color}]{text}[/{color}]"
+    if style == "html":
+        css = {
+            "green": "sensors-success",
+            "yellow": "sensors-warn",
+            "red": "sensors-error",
+            "dim": "sensors-dim",
+        }.get(color, "sensors-info")
+        return f'<span class="{css}">{text}</span>'
+    return text
+
+
+def _summary(reading: SensorReading, style: str) -> str:
+    color = "green" if reading.success else "red"
+    return _apply_color(reading.summary, color, style)
+
+
+def _failures(reading: SensorReading, style: str) -> str:
+    if reading.success:
+        return ""
+    parts = [_render_finding(f, style) for f in reading.findings]
+    parts += [_render_guidance(g, style) for g in reading.guidance]
+    if not parts:
+        return _apply_color(reading.summary, "red", style)
+    return "\n".join(p for p in parts if p)
+
+
+def _build_loc(f: Finding) -> str | None:
+    loc_parts: list[str] = []
+    if f.file:
+        loc_parts.append(f.file)
+        if f.line is not None:
+            loc_parts.append(str(f.line))
+            if f.column is not None:
+                loc_parts.append(str(f.column))
+    return ":".join(loc_parts) if loc_parts else None
+
+
+def _render_finding(f: Finding, style: str) -> str:
+    loc = _build_loc(f)
+    if style == "html":
+        return _render_finding_html(f, loc)
+    return _render_finding_text(f, loc, style)
+
+
+def _render_guidance(g: GuidanceBlock, style: str) -> str:
+    header = g.rule
+    if style == "terminal":
+        lines = [f"  [yellow]{header}[/yellow]"]
+        lines += [f"  [dim]{line}[/dim]" for line in g.body.splitlines()]
+        return "\n".join(lines)
+    if style == "html":
+        return (
+            f'<div class="sensors-guidance">'
+            f'<span class="sensors-rule">{header}</span>'
+            f'<div class="sensors-message">{g.body}</div>'
+            f'</div>'
+        )
+    return f"  {header}\n" + "\n".join(f"  {line}" for line in g.body.splitlines())
+
+
+def _render_finding_html(f: Finding, loc: str | None) -> str:
+    parts: list[str] = []
+    if loc:
+        parts.append(f'<span class="sensors-file">{loc}</span>')
+    if f.rule:
+        parts.append(f'<span class="sensors-rule">{f.rule}</span>')
+    parts.append(f'<span class="sensors-message">{f.message}</span>')
+    css = f"sensors-violation sensors-{f.severity}"
+    inner = " ".join(parts)
+    if f.context:
+        inner += f'<div class="sensors-context">{f.context}</div>'
+    return f'<div class="{css}">{inner}</div>'
+
+
+def _render_finding_text(f: Finding, loc: str | None, style: str) -> str:
+    color = {"error": "red", "warning": "yellow", "info": "dim"}.get(f.severity, "red")
+    text_parts: list[str] = []
+    if loc:
+        text_parts.append(_apply_color(loc, color, style))
+    if f.rule:
+        text_parts.append(f"[dim]{f.rule}[/dim]" if style == "terminal" else f.rule)
+    text_parts.append(f.message)
+    line = "  " + " ".join(text_parts)
+    if f.context:
+        line += f"\n    {f.context}"
+    return line

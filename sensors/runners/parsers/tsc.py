@@ -2,7 +2,7 @@
 
 import re
 
-from sensors.config import Finding, Metric, ParsedOutput, ScoreInfo
+from sensors.config import Finding, Metric, ScoreInfo, SensorReading
 
 from .base import OutputParser
 
@@ -34,7 +34,7 @@ _WATCH_COMPLETE_RE = re.compile(
 class TscParser(OutputParser):
     """Parser for TypeScript compiler (tsc) text output."""
 
-    def parse(self, output: str) -> ParsedOutput:
+    def parse(self, output: str) -> SensorReading:
         try:
             errors = self._parse_errors(output)
             error_count, file_count = self._parse_summary(output, errors)
@@ -50,7 +50,7 @@ class TscParser(OutputParser):
                 for e in errors
             ]
 
-            return ParsedOutput(
+            return SensorReading(
                 success=error_count == 0,
                 summary=self._summary_text(error_count, file_count),
                 score=ScoreInfo(
@@ -65,7 +65,7 @@ class TscParser(OutputParser):
                 ],
             )
         except Exception as e:
-            return ParsedOutput(
+            return SensorReading(
                 success=False,
                 summary=f"Parse error: {e}",
                 score=ScoreInfo(value=0, direction="less", description="Number of type errors"),

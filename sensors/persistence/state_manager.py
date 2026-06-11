@@ -12,12 +12,12 @@ import aiofiles
 from sensors.time_util import to_utc_iso, utc_now
 
 from .models import (
-    CheckHistoryEntry,
+    HistoryEntry,
     QueryLogEntry,
-    RunnerCheckSummary,
-    RunnerState,
-    SensorsState,
-    Snapshot,
+    RunnerEntry,
+    RunnerSummary,
+    SnapshotEntry,
+    StateEntry,
 )
 
 
@@ -34,6 +34,15 @@ def _hydrate_runner_states(runners: dict) -> None:
             runner_state["result"]["timestamp"] = _parse_dt(
                 runner_state["result"]["timestamp"]
             )
+        # Backwards compat: migrate old format (top-level formatted + score) to reading.
+        if "formatted" in runner_state and "reading" not in runner_state:
+            status = runner_state.get("status", "")
+            runner_state["reading"] = {
+                "success": status in ("success", "below_threshold"),
+                "summary": runner_state["formatted"].get("summary_llm", ""),
+                "score": runner_state.get("score") or {"value": 0, "direction": "less"},
+                "formatted": runner_state["formatted"],
+            }
 
 
 def _hydrate_query_log(entries: list) -> None:
@@ -54,15 +63,8 @@ class StateManager:
     """Manages reading and writing sensors state to JSON files."""
 
     def __init__(self, state_file: Path | None = None, history_file: Path | None = None):
-        """Initialize the state manager.
-
-        Args:
-            state_file: Path to the state JSON file. Defaults to sensors/state/current.json
-        """
         if state_file is None:
-            # Default to sensors/state/current.json relative to this file
-            sensors_root = Path(__file__).parent.parent.parent
-            state_file = sensors_root / "state" / "current.json"
+            state_file = Path(tempfile.mkdtemp()) / "sensors-state.json"
 
         self.state_file = Path(state_file)
         # Ensure state directory exists
@@ -78,16 +80,16 @@ class StateManager:
         if self.state_file.exists():
             self.state_file.unlink()
 
-    async def read_state(self) -> SensorsState:
+    async def read_state(self) -> StateEntry:
         """Read the current state from the JSON file.
 
         Returns:
-            SensorsState object. If the file doesn't exist or is invalid,
+            StateEntry object. If the file doesn't exist or is invalid,
             returns an empty state with current timestamp.
         """
         if not self.state_file.exists():
             # Return empty state if file doesn't exist
-            return SensorsState(
+            return StateEntry(
                 lastUpdated=datetime.now(),
                 runners={},
                 queryLog=[]
@@ -104,12 +106,12 @@ class StateManager:
             _hydrate_query_log(data.get("queryLog", []))
             _hydrate_snapshot(data.get("snapshot"))
 
-            return SensorsState(**data)
+            return StateEntry(**data)
 
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             # If file is corrupted, return empty state
             print(f"Warning: Failed to parse state file: {e}. Returning empty state.")
-            return SensorsState(
+            return StateEntry(
                 lastUpdated=datetime.now(),
                 runners={},
                 queryLog=[]
@@ -118,7 +120,7 @@ class StateManager:
     async def update_state(
         self,
         runner_name: str,
-        runner_state: RunnerState
+        runner_state: RunnerEntry
     ) -> None:
         """Update the state for a specific runner atomically.
 
@@ -149,7 +151,7 @@ class StateManager:
         current_state = await self.read_state()
 
         now_local = datetime.now()
-        current_state.snapshot = Snapshot(
+        current_state.snapshot = SnapshotEntry(
             snapshot_id=uuid.uuid4().hex[:8],
             timestamp=now_local,
             runners=current_state.runners.copy(),
@@ -158,12 +160,15 @@ class StateManager:
 
         await self._write_state_atomic(current_state)
 
-        snapshot_entry = CheckHistoryEntry(
+        snapshot_entry = HistoryEntry(
             timestamp=utc_now(),
             runner_filter=None,
             snapshot_id=current_state.snapshot.snapshot_id,
             runners={
-                name: RunnerCheckSummary(status=rs.status, score=rs.score)
+                name: RunnerSummary(
+                    status=rs.status,
+                    score=rs.reading.score if rs.reading else None,
+                )
                 for name, rs in current_state.runners.items()
             },
         )
@@ -205,14 +210,14 @@ class StateManager:
         # Write atomically
         await self._write_state_atomic(current_state)
 
-    async def append_check_history(self, entry: CheckHistoryEntry) -> None:
+    async def append_check_history(self, entry: HistoryEntry) -> None:
         """Append one check history record to the history JSONL file.
 
         Each line is a compact JSON object representing the state of all
         runners at the moment a 'check' command was executed.
 
         Args:
-            entry: The CheckHistoryEntry to persist.
+            entry: The HistoryEntry to persist.
         """
         current_state = await self.read_state()
         snapshot_id = (
@@ -228,11 +233,11 @@ class StateManager:
         async with aiofiles.open(self.history_file, "a") as f:
             await f.write(line)
 
-    async def _write_state_atomic(self, state: SensorsState) -> None:
+    async def _write_state_atomic(self, state: StateEntry) -> None:
         """Write state to disk atomically using tempfile + os.replace().
 
         Args:
-            state: The SensorsState to write
+            state: The StateEntry to write
         """
         # Convert to JSON with proper datetime serialization
         state_dict = state.model_dump(mode="json")

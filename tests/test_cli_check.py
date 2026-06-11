@@ -13,8 +13,9 @@ from sensors.cli import (
     _relativize_runner_configs,
     _runner_status_text,
 )
+from sensors.config import Formatted, ScoreInfo, SensorReading
 from sensors.config.schema import RunnerConfig, RunnerMode
-from sensors.persistence.models import FormattedOutput, RunnerState, SensorsState
+from sensors.persistence.models import RunnerEntry, StateEntry
 
 
 def _runner_state(
@@ -22,13 +23,18 @@ def _runner_state(
     *,
     details_llm: str = "ok",
     failures_llm: str = "",
-) -> RunnerState:
-    return RunnerState(
+) -> RunnerEntry:
+    return RunnerEntry(
         lastRun=datetime(2025, 1, 1, 12, 0, 0),
         status=status,  # type: ignore[arg-type]
-        formatted=FormattedOutput(
-            details_llm=details_llm,
-            failures_llm=failures_llm,
+        reading=SensorReading(
+            success=(status != "failure"),
+            summary=details_llm,
+            score=ScoreInfo(value=0, direction="less"),
+            formatted=Formatted(
+                summary_llm=details_llm,
+                failures_llm=failures_llm,
+            ),
         ),
     )
 
@@ -46,7 +52,7 @@ def test_runner_status_text(status: str, expected: str) -> None:
 
 
 def test_check_exit_code_all_success() -> None:
-    state = SensorsState(
+    state = StateEntry(
         lastUpdated=datetime(2025, 1, 1),
         runners={"a": _runner_state("success")},
     )
@@ -54,7 +60,7 @@ def test_check_exit_code_all_success() -> None:
 
 
 def test_check_exit_code_below_threshold() -> None:
-    state = SensorsState(
+    state = StateEntry(
         lastUpdated=datetime(2025, 1, 1),
         runners={"a": _runner_state("below_threshold")},
     )
@@ -62,7 +68,7 @@ def test_check_exit_code_below_threshold() -> None:
 
 
 def test_check_exit_code_failure() -> None:
-    state = SensorsState(
+    state = StateEntry(
         lastUpdated=datetime(2025, 1, 1),
         runners={"a": _runner_state("failure")},
     )
@@ -70,7 +76,7 @@ def test_check_exit_code_failure() -> None:
 
 
 def test_check_exit_code_failure_overrides_below_threshold() -> None:
-    state = SensorsState(
+    state = StateEntry(
         lastUpdated=datetime(2025, 1, 1),
         runners={
             "ok": _runner_state("below_threshold"),
@@ -91,7 +97,7 @@ def test_print_runner_result_includes_status_and_failures(capsys: pytest.Capture
     )
     rs = _runner_state("failure", details_llm="3 issues", failures_llm="E001 bad\nE002 worse")
     now = datetime(2025, 1, 1, 12, 5, 0, tzinfo=timezone.utc)
-    state = SensorsState(lastUpdated=datetime(2025, 1, 1), runners={"lint": rs})
+    state = StateEntry(lastUpdated=datetime(2025, 1, 1), runners={"lint": rs})
 
     _print_runner_result("lint", rs, {"lint": cfg}, state, now)
     out = capsys.readouterr().out
@@ -159,7 +165,7 @@ def test_print_runner_result_omits_dir_when_same_as_root(capsys: pytest.CaptureF
     cfg = _make_config("lint", working_dir=None)  # already relativized: None means same as root
     rs = _runner_state("success")
     now = datetime(2025, 1, 1, 12, 5, 0, tzinfo=timezone.utc)
-    state = SensorsState(lastUpdated=datetime(2025, 1, 1), runners={"lint": rs})
+    state = StateEntry(lastUpdated=datetime(2025, 1, 1), runners={"lint": rs})
 
     _print_runner_result("lint", rs, {"lint": cfg}, state, now)
     out = capsys.readouterr().out
@@ -171,7 +177,7 @@ def test_print_runner_result_shows_relative_dir_for_subdir(capsys: pytest.Captur
     cfg = _make_config("lint", working_dir="frontend")  # already relativized
     rs = _runner_state("success")
     now = datetime(2025, 1, 1, 12, 5, 0, tzinfo=timezone.utc)
-    state = SensorsState(lastUpdated=datetime(2025, 1, 1), runners={"lint": rs})
+    state = StateEntry(lastUpdated=datetime(2025, 1, 1), runners={"lint": rs})
 
     _print_runner_result("lint", rs, {"lint": cfg}, state, now)
     out = capsys.readouterr().out

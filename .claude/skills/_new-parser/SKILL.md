@@ -11,8 +11,8 @@ Use this skill when the user asks to add support for a new tool output in sensor
 
 The sensors system uses a plugin architecture:
 - GenericRunner handles process execution and orchestration.
-- Parsers transform raw output into structured ParsedOutput.
-- GenericFormatter renders ParsedOutput for terminal, HTML, and LLM views.
+- Parsers transform raw output into structured SensorReading.
+- GenericFormatter renders SensorReading for terminal, HTML, and LLM views.
 
 ## Step-by-step Instructions
 
@@ -23,7 +23,7 @@ Read these files first:
 - sensors/config/result_types.py
 - sensors/runners/formatter.py
 
-Do not assume legacy methods exist. The parser contract is parse(output: str) -> ParsedOutput.
+Do not assume legacy methods exist. The parser contract is parse(output: str) -> SensorReading.
 
 ### 2. Collect Real Sample Output
 
@@ -35,21 +35,21 @@ Create sensors/runners/parsers/<parser_name>.py.
 
 Implement:
 - class <ParserClass>(OutputParser)
-- def parse(self, output: str) -> ParsedOutput
+- def parse(self, output: str) -> SensorReading
 
 Design rules:
 - Keep parsing logic small and composable (extract helpers for sections).
 - Return structured fields:
   - success
-  - summary
+  - label
   - score (ScoreInfo)
   - findings (Finding)
   - metrics (Metric)
   - guidance (GuidanceBlock) if applicable
   - extra for tool-specific data that does not fit generic structures
-- Handle parse failures gracefully by returning ParsedOutput with:
+- Handle parse failures gracefully by returning SensorReading with:
   - success=False
-  - summary set to a parse error message
+  - label set to a parse error message
   - score set to a safe default
   - extra containing parseError and optional raw excerpt
 - The runner strips ANSI before parsing. Regex should target plain text.
@@ -66,7 +66,7 @@ Minimum coverage:
 
 Test style:
 - call parser.parse(output)
-- assert ParsedOutput fields (summary, score, findings, metrics, extra)
+- assert SensorReading fields (label, score, findings, metrics, extra)
 - avoid testing formatting methods in parser tests
 
 Run:

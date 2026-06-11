@@ -8,7 +8,7 @@ uses stdout line detection for watch mode.
 import json
 from typing import Any
 
-from sensors.config import Metric, ParsedOutput, ScoreInfo
+from sensors.config import Metric, ScoreInfo, SensorReading
 
 from .base import OutputParser
 
@@ -28,12 +28,12 @@ class VitestCovParser(OutputParser):
         import re
         return bool(re.search(r'Tests\s+\d+\s+(failed|passed)', line))
 
-    def parse(self, output: str) -> ParsedOutput:
-        """Parse coverage-final.json (istanbul JSON format) into ParsedOutput."""
+    def parse(self, output: str) -> SensorReading:
+        """Parse coverage-final.json (istanbul JSON format) into SensorReading."""
         try:
             data: dict[str, Any] = json.loads(output)
         except (json.JSONDecodeError, ValueError) as e:
-            return ParsedOutput(
+            return SensorReading(
                 success=False,
                 summary=(
                     'Parse error: Expected JSON from coverage/coverage-final.json — '
@@ -61,7 +61,7 @@ class VitestCovParser(OutputParser):
 
             clean_files = [{k: v for k, v in f.items() if not k.startswith("_")} for f in files]
 
-            return ParsedOutput(
+            return SensorReading(
                 success=True,
                 summary=f"{total_branch}% branch",
                 score=ScoreInfo(
@@ -78,7 +78,7 @@ class VitestCovParser(OutputParser):
                 extra={"files": clean_files},
             )
         except Exception as e:
-            return ParsedOutput(
+            return SensorReading(
                 success=False,
                 summary=f"Parse error: {e}",
                 score=ScoreInfo(value=0, direction="more", description="Branch coverage percentage"),
