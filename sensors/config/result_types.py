@@ -1,5 +1,8 @@
 """Domain result types for runner output, shared across the runner and parser layers."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
@@ -72,3 +75,69 @@ class FormattedOutput(BaseModel):
         default="",
         description="Multi-line failure details as plain text for LLM/agent"
     )
+
+
+# ---------------------------------------------------------------------------
+# Structured parser output types (new interface — Step 1 of refactor)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Finding:
+    """A single violation, error, test failure, or contract breach."""
+
+    message: str
+    severity: Literal["error", "warning", "info"] = "error"
+
+    # Source location. For graph-edge violations (depcruise, import_linter) the parser
+    # pre-renders "source -> target" into this field; the formatter treats it uniformly.
+    file: str | None = None
+    line: int | None = None
+    column: int | None = None
+
+    # Rule / code identity
+    rule: str | None = None  # ruleId, TSxxxx, contract name, etc.
+
+    # Extra detail — description text, full stack trace excerpt, etc.
+    context: str | None = None
+
+
+@dataclass
+class Metric:
+    """A single named numeric value (counts, percentages, line totals)."""
+
+    key: str
+    label: str
+    value: float | int
+    unit: str | None = None                    # "%", "lines", "mutants", etc.
+    direction: Literal["more", "less"] = "less"
+
+    # Optional threshold for display colouring (relevant for direction="more" metrics).
+    # At or above this value -> green; below -> red. None falls back to success/failure.
+    threshold: float | None = None
+
+
+@dataclass
+class GuidanceBlock:
+    """A block of guidance text associated with a triggered rule."""
+
+    rule: str
+    body: str                    # multi-line explanation
+    summary: str | None = None   # short one-liner; ruff only, None for eslint
+
+
+@dataclass
+class ParsedOutput:
+    """Structured result returned by a parser. Replaces dict[str, Any] in RunnerResult."""
+
+    success: bool
+    summary: str        # plain-text one-liner, e.g. "2 errors, 1 warning" or "72% coverage"
+    score: ScoreInfo    # previously returned by calculate_score()
+
+    findings: list[Finding] = field(default_factory=list)
+    metrics: list[Metric] = field(default_factory=list)
+    guidance: list[GuidanceBlock] = field(default_factory=list)
+
+    # Escape hatch for parser-specific data that does not fit the model above.
+    # GenericFormatter ignores this field.
+    extra: dict[str, Any] = field(default_factory=dict)

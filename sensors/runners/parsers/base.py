@@ -17,12 +17,10 @@ HTML methods should use these CSS classes for consistent styling:
 - sensors-violation: a single violation/failure block
 """
 
-from abc import ABC, abstractmethod
-
-from sensors.config import RunnerResult, ScoreInfo
+from sensors.config import ParsedOutput, RunnerResult, ScoreInfo
 
 
-class OutputParser(ABC):
+class OutputParser:
     """Abstract base class for output parsers.
 
     Parsers are stateless and focused solely on data transformation:
@@ -33,7 +31,14 @@ class OutputParser(ABC):
     All process management (spawning, watching, intervals) is handled by GenericRunner.
     """
 
-    @abstractmethod
+    def parse(self, output: str) -> ParsedOutput:
+        """Parse raw output into structured ParsedOutput.
+
+        Override this in migrated parsers. The default raises NotImplementedError,
+        which causes GenericRunner to fall back to the legacy parse_output() path.
+        """
+        raise NotImplementedError
+
     async def parse_output(self, output: str) -> RunnerResult:
         """Parse raw command output into a structured result.
 
@@ -43,7 +48,7 @@ class OutputParser(ABC):
         Returns:
             RunnerResult containing timestamp, success status, and parsed output data
         """
-        pass
+        raise NotImplementedError
 
     def is_watch_run_complete(self, line: str) -> bool:
         """Detect whether a line of output signals that a watch run has completed.
@@ -64,7 +69,6 @@ class OutputParser(ABC):
         """
         return False
 
-    @abstractmethod
     def calculate_score(self, result: RunnerResult) -> ScoreInfo:
         """Calculate a numerical score for trend comparison.
 
@@ -78,58 +82,52 @@ class OutputParser(ABC):
         Returns:
             ScoreInfo with the numerical score and which direction is better
         """
-        pass
+        raise NotImplementedError
 
     # -- Details: short one-line summary --
 
-    @abstractmethod
     def format_details_terminal(self, result: RunnerResult) -> str:
         """Format result as a short line for the Rich terminal display.
 
         May include Rich markup tags (e.g., [red], [green]).
         Shown in the "Details" column of the live display table (~20-30 chars).
         """
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
     def format_details_html(self, result: RunnerResult) -> str:
         """Format result as a short HTML snippet for web dashboards.
 
         Use the documented CSS classes (sensors-error, sensors-warn, etc.).
         """
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
     def format_details_llm(self, result: RunnerResult) -> str:
         """Format result as a short plain-text line for LLM/agent consumption.
 
         No markup, no special characters. Pure text.
         """
-        pass
+        raise NotImplementedError
 
     # -- Failures: multi-line failure details --
 
-    @abstractmethod
     def format_failures_terminal(self, result: RunnerResult) -> str:
         """Format failures as multi-line Rich text for terminal display.
 
         May include Rich markup. Return empty string if no failures.
         """
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
     def format_failures_html(self, result: RunnerResult) -> str:
         """Format failures as multi-line HTML for web dashboards.
 
         Use the documented CSS classes. Return empty string if no failures.
         """
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
     def format_failures_llm(self, result: RunnerResult) -> str:
         """Format failures as multi-line plain text for LLM/agent consumption.
 
         Should be comprehensive and easy to parse line-by-line.
         Return empty string if no failures.
         """
-        pass
+        raise NotImplementedError

@@ -6,10 +6,9 @@ uses stdout line detection for watch mode.
 """
 
 import json
-from datetime import datetime
 from typing import Any
 
-from sensors.config import RunnerResult, ScoreInfo
+from sensors.config import Metric, ParsedOutput, ScoreInfo
 
 from .base import OutputParser
 
@@ -29,21 +28,20 @@ class VitestCovParser(OutputParser):
         import re
         return bool(re.search(r'Tests\s+\d+\s+(failed|passed)', line))
 
-    async def parse_output(self, output: str) -> RunnerResult:
+    def parse(self, output: str) -> ParsedOutput:
+        """Parse coverage-final.json (istanbul JSON format) into ParsedOutput."""
         try:
             data: dict[str, Any] = json.loads(output)
-        except (json.JSONDecodeError, ValueError):
-            return RunnerResult(
-                timestamp=datetime.now(),
+        except (json.JSONDecodeError, ValueError) as e:
+            return ParsedOutput(
                 success=False,
-                output={
-                    "parseError": (
-                        'Expected JSON from coverage/coverage-final.json — '
-                        'add `result: "coverage/coverage-final.json"` to your runner config '
-                        'and `reporter: ["json"]` to your vitest coverage config.'
-                    ),
-                    "raw": output[:200],
-                },
+                summary=(
+                    'Parse error: Expected JSON from coverage/coverage-final.json — '
+                    'add `result: "coverage/coverage-final.json"` to your runner config '
+                    'and `reporter: ["json"]` to your vitest coverage config.'
+                ),
+                score=ScoreInfo(value=0, direction="more", description="Branch coverage percentage"),
+                extra={"parseError": str(e)},
             )
 
         try:
@@ -61,25 +59,30 @@ class VitestCovParser(OutputParser):
             total_funcs = _pct(totals["f"][0], totals["f"][1])
             total_branch = _pct(totals["b"][0], totals["b"][1])
 
-            # Strip internal accounting keys before storing
             clean_files = [{k: v for k, v in f.items() if not k.startswith("_")} for f in files]
 
-            return RunnerResult(
-                timestamp=datetime.now(),
+            return ParsedOutput(
                 success=True,
-                output={
-                    "totalStmts": total_stmts,
-                    "totalBranch": total_branch,
-                    "totalFuncs": total_funcs,
-                    "totalLines": total_stmts,  # istanbul JSON has no separate line count
-                    "files": clean_files,
-                },
+                summary=f"{total_branch}% branch",
+                score=ScoreInfo(
+                    value=int(total_branch),
+                    direction="more",
+                    description="Branch coverage percentage",
+                ),
+                metrics=[
+                    Metric("totalBranch", "Branch coverage", total_branch, "%", "more", threshold=80.0),
+                    Metric("totalStmts", "Statement coverage", total_stmts, "%", "more"),
+                    Metric("totalFuncs", "Function coverage", total_funcs, "%", "more"),
+                    Metric("totalLines", "Line coverage", total_stmts, "%", "more"),
+                ],
+                extra={"files": clean_files},
             )
         except Exception as e:
-            return RunnerResult(
-                timestamp=datetime.now(),
+            return ParsedOutput(
                 success=False,
-                output={"parseError": str(e), "raw": output[:500]},
+                summary=f"Parse error: {e}",
+                score=ScoreInfo(value=0, direction="more", description="Branch coverage percentage"),
+                extra={"parseError": str(e)},
             )
 
     # -- Private helpers --
@@ -121,103 +124,6 @@ class VitestCovParser(OutputParser):
             "_f_hit": f_hit, "_f_total": f_total,
             "_b_hit": b_hit, "_b_total": b_total,
         }
-
-    def calculate_score(self, result: RunnerResult) -> ScoreInfo:
-        return ScoreInfo(
-            value=int(result.output.get("totalBranch", 0)),
-            direction="more",
-            description="Branch coverage percentage",
-        )
-
-    # -- Helpers --
-
-    def _detail_text(self, result: RunnerResult) -> str:
-        if "parseError" in result.output:
-            return result.output["parseError"]
-        branch = result.output.get("totalBranch", 0)
-        return f"{branch}% branch"
-
-    def _cov_color(self, result: RunnerResult) -> str:
-        if not result.success:
-            return "red"
-        cov = result.output.get("totalBranch", 0)
-        if cov >= 80:
-            return "green"
-        if cov >= 50:
-            return "yellow"
-        return "red"
-
-    # -- Details --
-
-    def format_details_terminal(self, result: RunnerResult) -> str:
-        text = self._detail_text(result)
-        color = self._cov_color(result)
-        return f"[{color}]{text}[/{color}]"
-
-    def format_details_html(self, result: RunnerResult) -> str:
-        text = self._detail_text(result)
-        css = {
-            "green": "sensors-success",
-            "yellow": "sensors-warn",
-            "red": "sensors-error",
-        }[self._cov_color(result)]
-        return f'<span class="{css}">{text}</span>'
-
-    def format_details_llm(self, result: RunnerResult) -> str:
-        return self._detail_text(result)
-
-    # -- Failures --
-
-    def format_failures_terminal(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        return self._format_failure_items(result, "terminal")
-
-    def format_failures_html(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        return self._format_failure_items(result, "html")
-
-    def format_failures_llm(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        return self._format_failure_items(result, "llm")
-
-    def _format_failure_items(self, result: RunnerResult, style: str) -> str:
-        lines: list[str] = []
-
-        parse_error = result.output.get("parseError")
-        if parse_error:
-            msg = f"Parse error: {parse_error}"
-            if style == "terminal":
-                lines.append(f"  [red]{msg}[/red]")
-            elif style == "html":
-                lines.append(f'<span class="sensors-error">{msg}</span>')
-            else:
-                lines.append(f"  {msg}")
-            return "\n".join(lines)
-
-        uncovered_files = [f for f in result.output.get("files", []) if f.get("uncovered")]
-        if uncovered_files:
-            if style == "terminal":
-                lines.append("  [yellow]Uncovered lines:[/yellow]")
-                for f in uncovered_files:
-                    lines.append(f"    [dim]{f['name']}[/dim] lines {f['uncovered']}")
-            elif style == "html":
-                for f in uncovered_files:
-                    lines.append(
-                        f'<div class="sensors-violation">'
-                        f'<span class="sensors-file">{f["name"]}</span> '
-                        f'<span class="sensors-warn">lines {f["uncovered"]}</span>'
-                        f'</div>'
-                    )
-            else:
-                lines.append("  Uncovered lines:")
-                for f in uncovered_files:
-                    lines.append(f"    {f['name']} lines {f['uncovered']}")
-
-        return "\n".join(lines)
-
 
 # -- Module-level helpers --
 

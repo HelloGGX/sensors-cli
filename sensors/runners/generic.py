@@ -14,13 +14,16 @@ import shlex
 from datetime import datetime
 from pathlib import Path
 
-from sensors.config import FormattedOutput, RunnerResult, ScoreInfo
+from sensors.config import FormattedOutput, ParsedOutput, RunnerResult, ScoreInfo
 from sensors.config.schema import RunnerConfig, RunnerMode
 from sensors.persistence.models import RunnerState
 from sensors.persistence.state_manager import StateManager
+from sensors.runners.formatter import GenericFormatter
 from sensors.runners.parsers.base import OutputParser
 
 logger = logging.getLogger(__name__)
+
+_formatter = GenericFormatter()
 
 # When commandTimeout is omitted (None), wait this long before killing the subprocess.
 # Previously a hardcoded 300s caused long jobs (e.g. Stryker) to never persist state.
@@ -101,7 +104,7 @@ class GenericRunner:
         if self.rerun_event is not None:
             self.rerun_event.set()
 
-    async def on_result(self, result: RunnerResult) -> None:
+    async def on_result(self, result: RunnerResult, parsed: ParsedOutput | None = None) -> None:
         """Handle a new runner result by persisting to state manager.
 
         Computes all 6 formatted strings via the parser before persisting.
@@ -134,15 +137,19 @@ class GenericRunner:
             status = "failure"
         else:
             status = "success" if result.success else "failure"
-            formatted = FormattedOutput(
-                details_terminal=self.parser.format_details_terminal(result),
-                details_html=self.parser.format_details_html(result),
-                details_llm=self.parser.format_details_llm(result),
-                failures_terminal=self.parser.format_failures_terminal(result),
-                failures_html=self.parser.format_failures_html(result),
-                failures_llm=self.parser.format_failures_llm(result),
-            )
-            score = self.parser.calculate_score(result)
+            if parsed is not None:
+                formatted = _formatter.format(parsed)
+                score = parsed.score
+            else:
+                formatted = FormattedOutput(
+                    details_terminal=self.parser.format_details_terminal(result),
+                    details_html=self.parser.format_details_html(result),
+                    details_llm=self.parser.format_details_llm(result),
+                    failures_terminal=self.parser.format_failures_terminal(result),
+                    failures_html=self.parser.format_failures_html(result),
+                    failures_llm=self.parser.format_failures_llm(result),
+                )
+                score = self.parser.calculate_score(result)
             threshold = self.config.threshold
             if status == "success" and score is not None and threshold is not None:
                 below = (
@@ -221,6 +228,16 @@ class GenericRunner:
             },
         )
 
+    async def _parse_input(self, raw: str) -> tuple[ParsedOutput | None, RunnerResult]:
+        """Try parse() first; fall back to parse_output() for unmigrated parsers."""
+        try:
+            parsed = self.parser.parse(raw)
+            result = RunnerResult(timestamp=datetime.now(), success=parsed.success, output={})
+            return parsed, result
+        except NotImplementedError:
+            result = await self.parser.parse_output(raw)
+            return None, result
+
     @staticmethod
     def _wrap_with_script(command: str) -> str:
         """Wrap a command with ``script`` to provide a pseudo-TTY.
@@ -266,10 +283,10 @@ class GenericRunner:
         stripped = self.strip_ansi(complete_output)
         parse_input = await self._parser_input_from_run(stripped)
         if isinstance(parse_input, RunnerResult):
-            result = parse_input
+            await self.on_result(parse_input)
         else:
-            result = await self.parser.parse_output(parse_input)
-        await self.on_result(result)
+            parsed, result = await self._parse_input(parse_input)
+            await self.on_result(result, parsed)
 
     async def _handle_watch_line(self, line: str, accumulated: list[str]) -> list[str]:
         """Append a line; parse and reset when the parser signals a run boundary."""
@@ -396,10 +413,10 @@ class GenericRunner:
                 output = self.strip_ansi(stdout.decode('utf-8', errors='ignore'))
                 parse_input = await self._parser_input_from_run(output)
                 if isinstance(parse_input, RunnerResult):
-                    result = parse_input
+                    await self.on_result(parse_input)
                 else:
-                    result = await self.parser.parse_output(parse_input)
-                await self.on_result(result)
+                    parsed, result = await self._parse_input(parse_input)
+                    await self.on_result(result, parsed)
 
             except asyncio.TimeoutError:
                 process.kill()
