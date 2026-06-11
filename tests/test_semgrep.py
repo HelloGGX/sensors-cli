@@ -1,9 +1,5 @@
 import json
-from datetime import datetime
 
-import pytest
-
-from sensors.config import RunnerResult
 from sensors.runners.parsers import SemgrepParser
 
 SEMGREP_FINDINGS_JSON = json.dumps({
@@ -66,7 +62,6 @@ SEMGREP_WITH_NEED_LOGIN_LIST_JSON = json.dumps({
     ],
 })
 
-
 SEMGREP_MIXED_OUTPUT = (
     "\n"
     "Scanning 95 files tracked by git with 1064 Code rules:\n"
@@ -82,322 +77,106 @@ SEMGREP_MIXED_OUTPUT = (
 )
 
 
-@pytest.mark.asyncio
-async def test_parse_output_mixed_with_stderr():
+def test_parse_mixed_with_stderr():
     """Semgrep sends progress to stderr mixed with JSON stdout."""
     parser = SemgrepParser()
-    result = await parser.parse_output(SEMGREP_MIXED_OUTPUT)
+    parsed = parser.parse(SEMGREP_MIXED_OUTPUT)
 
-    assert result.success is True
-    assert result.output["findingCount"] == 0
-    assert result.output["violations"] == []
+    assert parsed.success is True
+    assert parsed.findings == []
 
 
-@pytest.mark.asyncio
-async def test_parse_output_with_findings():
+def test_parse_with_findings():
     parser = SemgrepParser()
-    result = await parser.parse_output(SEMGREP_FINDINGS_JSON)
+    parsed = parser.parse(SEMGREP_FINDINGS_JSON)
 
-    assert result.success is False
-    assert result.output["findingCount"] == 2
-    assert result.output["errorCount"] == 0
-    assert len(result.output["violations"]) == 2
+    assert parsed.success is False
+    assert len(parsed.findings) == 2
 
-    v0 = result.output["violations"][0]
-    assert v0["file"] == "src/views/index.ejs"
-    assert v0["line"] == 12
-    assert v0["column"] == 5
-    assert v0["ruleId"] == "javascript.express.security.audit.xss.mustache.var-in-href"
-    assert v0["severity"] == "WARNING"
+    f0 = parsed.findings[0]
+    assert f0.file == "src/views/index.ejs"
+    assert f0.line == 12
+    assert f0.column == 5
+    assert f0.rule == "javascript.express.security.audit.xss.mustache.var-in-href"
+    assert f0.severity == "warning"
 
-    v1 = result.output["violations"][1]
-    assert v1["file"] == "src/utils/dynamic.ts"
-    assert v1["line"] == 45
-    assert v1["severity"] == "ERROR"
+    f1 = parsed.findings[1]
+    assert f1.file == "src/utils/dynamic.ts"
+    assert f1.line == 45
+    assert f1.severity == "error"
 
 
-@pytest.mark.asyncio
-async def test_parse_output_clean():
+def test_parse_clean():
     parser = SemgrepParser()
-    result = await parser.parse_output(SEMGREP_CLEAN_JSON)
+    parsed = parser.parse(SEMGREP_CLEAN_JSON)
 
-    assert result.success is True
-    assert result.output["findingCount"] == 0
-    assert result.output["errorCount"] == 0
-    assert result.output["violations"] == []
+    assert parsed.success is True
+    assert parsed.findings == []
+    assert parsed.score.value == 0
 
 
-@pytest.mark.asyncio
-async def test_parse_output_with_errors():
+def test_parse_with_errors():
     parser = SemgrepParser()
-    result = await parser.parse_output(SEMGREP_WITH_ERRORS_JSON)
+    parsed = parser.parse(SEMGREP_WITH_ERRORS_JSON)
 
-    assert result.success is False
-    assert result.output["findingCount"] == 0
-    assert result.output["errorCount"] == 1
-    assert result.output["errors"][0]["message"] == "Failed to parse file.ts"
+    assert parsed.success is False
+    ec = next(m for m in parsed.metrics if m.key == "errorCount")
+    assert ec.value == 1
+    assert parsed.extra["errors"][0]["message"] == "Failed to parse file.ts"
 
 
-@pytest.mark.asyncio
-async def test_parse_output_partial_parsing_is_ignored():
+def test_parse_partial_parsing_is_ignored():
     """PartialParsing errors (list-typed) should be ignored -- scan still succeeded."""
     parser = SemgrepParser()
-    result = await parser.parse_output(SEMGREP_WITH_PARTIAL_PARSING_JSON)
+    parsed = parser.parse(SEMGREP_WITH_PARTIAL_PARSING_JSON)
 
-    assert result.success is True
-    assert result.output["findingCount"] == 0
-    assert result.output["errorCount"] == 0
+    assert parsed.success is True
+    ec = next(m for m in parsed.metrics if m.key == "errorCount")
+    assert ec.value == 0
 
 
-@pytest.mark.asyncio
-async def test_parse_output_need_login_list_type_is_ignored():
+def test_parse_need_login_list_type_is_ignored():
     """NeedLogin encoded as a list type should also be ignored."""
     parser = SemgrepParser()
-    result = await parser.parse_output(SEMGREP_WITH_NEED_LOGIN_LIST_JSON)
+    parsed = parser.parse(SEMGREP_WITH_NEED_LOGIN_LIST_JSON)
 
-    assert result.success is True
-    assert result.output["errorCount"] == 0
+    assert parsed.success is True
+    ec = next(m for m in parsed.metrics if m.key == "errorCount")
+    assert ec.value == 0
 
 
-@pytest.mark.asyncio
-async def test_parse_output_invalid_json():
+def test_parse_invalid_json():
     parser = SemgrepParser()
-    result = await parser.parse_output("not json at all")
+    parsed = parser.parse("not json at all")
 
-    assert result.success is False
-    assert "parseError" in result.output
+    assert parsed.success is False
+    assert "parseError" in parsed.extra
 
 
-@pytest.mark.asyncio
-async def test_parse_output_empty():
+def test_parse_empty():
     parser = SemgrepParser()
-    result = await parser.parse_output("")
+    parsed = parser.parse("")
 
-    assert result.success is False
-    assert "parseError" in result.output
+    assert parsed.success is False
+    assert "parseError" in parsed.extra
 
 
-def test_calculate_score():
+def test_parse_score():
     parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=False,
-        output={"findingCount": 3, "errorCount": 1, "violations": [], "errors": []},
-    )
-    score = parser.calculate_score(result)
-    assert score.value == 4
-    assert score.direction == "less"
+    parsed = parser.parse(SEMGREP_FINDINGS_JSON)
+
+    assert parsed.score.value == 2
+    assert parsed.score.direction == "less"
 
 
-def test_calculate_score_clean():
+def test_parse_summary_findings():
     parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=True,
-        output={"findingCount": 0, "errorCount": 0, "violations": [], "errors": []},
-    )
-    score = parser.calculate_score(result)
-    assert score.value == 0
-    assert score.direction == "less"
+    parsed = parser.parse(SEMGREP_FINDINGS_JSON)
+    assert "2 findings" in parsed.summary
 
 
-# -- Details formatting --
-
-
-def test_format_details_terminal_findings():
+def test_parse_summary_clean():
     parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=False,
-        output={"findingCount": 2, "errorCount": 0, "violations": [], "errors": []},
-    )
-    text = parser.format_details_terminal(result)
-    assert "[red]" in text
-    assert "2 findings" in text
+    parsed = parser.parse(SEMGREP_CLEAN_JSON)
+    assert parsed.summary == "No findings"
 
-
-def test_format_details_terminal_clean():
-    parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=True,
-        output={"findingCount": 0, "errorCount": 0, "violations": [], "errors": []},
-    )
-    text = parser.format_details_terminal(result)
-    assert "[green]" in text
-    assert "No findings" in text
-
-
-def test_format_details_html_findings():
-    parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=False,
-        output={"findingCount": 1, "errorCount": 0, "violations": [], "errors": []},
-    )
-    html = parser.format_details_html(result)
-    assert "sensors-error" in html
-    assert "1 finding" in html
-
-
-def test_format_details_html_clean():
-    parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=True,
-        output={"findingCount": 0, "errorCount": 0, "violations": [], "errors": []},
-    )
-    html = parser.format_details_html(result)
-    assert "sensors-success" in html
-
-
-def test_format_details_llm():
-    parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=False,
-        output={"findingCount": 2, "errorCount": 1, "violations": [], "errors": []},
-    )
-    text = parser.format_details_llm(result)
-    assert text == "2 findings, 1 error"
-
-
-# -- Failures formatting --
-
-
-def test_format_failures_success_returns_empty():
-    parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=True,
-        output={"findingCount": 0, "errorCount": 0, "violations": [], "errors": []},
-    )
-    assert parser.format_failures_terminal(result) == ""
-    assert parser.format_failures_html(result) == ""
-    assert parser.format_failures_llm(result) == ""
-
-
-def test_format_failures_terminal():
-    parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=False,
-        output={
-            "findingCount": 1,
-            "errorCount": 0,
-            "violations": [{
-                "file": "app.ts",
-                "line": 10,
-                "column": 1,
-                "ruleId": "typescript.security.detect-eval",
-                "message": "eval is dangerous",
-                "severity": "ERROR",
-            }],
-            "errors": [],
-        },
-    )
-    text = parser.format_failures_terminal(result)
-    assert "app.ts:10:1" in text
-    assert "ERROR" in text
-    assert "detect-eval" in text
-    assert "[red]" in text
-
-
-def test_format_failures_terminal_warning():
-    parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=False,
-        output={
-            "findingCount": 1,
-            "errorCount": 0,
-            "violations": [{
-                "file": "app.ts",
-                "line": 5,
-                "column": 3,
-                "ruleId": "some-rule",
-                "message": "minor issue",
-                "severity": "WARNING",
-            }],
-            "errors": [],
-        },
-    )
-    text = parser.format_failures_terminal(result)
-    assert "[yellow]" in text
-    assert "WARNING" in text
-
-
-def test_format_failures_html():
-    parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=False,
-        output={
-            "findingCount": 1,
-            "errorCount": 0,
-            "violations": [{
-                "file": "src/index.ts",
-                "line": 20,
-                "column": 5,
-                "ruleId": "javascript.lang.security.detect-eval",
-                "message": "eval detected",
-                "severity": "ERROR",
-            }],
-            "errors": [],
-        },
-    )
-    html = parser.format_failures_html(result)
-    assert "sensors-violation" in html
-    assert "sensors-file" in html
-    assert "sensors-error" in html
-    assert "sensors-rule" in html
-    assert "src/index.ts:20:5" in html
-
-
-def test_format_failures_html_warning():
-    parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=False,
-        output={
-            "findingCount": 1,
-            "errorCount": 0,
-            "violations": [{
-                "file": "a.ts",
-                "line": 1,
-                "column": 1,
-                "ruleId": "rule",
-                "message": "msg",
-                "severity": "WARNING",
-            }],
-            "errors": [],
-        },
-    )
-    html = parser.format_failures_html(result)
-    assert "sensors-warn" in html
-
-
-def test_format_failures_llm():
-    parser = SemgrepParser()
-    result = RunnerResult(
-        timestamp=datetime.utcnow(),
-        success=False,
-        output={
-            "findingCount": 1,
-            "errorCount": 0,
-            "violations": [{
-                "file": "lib/api.ts",
-                "line": 33,
-                "column": 8,
-                "ruleId": "typescript.security.sql-injection",
-                "message": "Possible SQL injection",
-                "severity": "ERROR",
-            }],
-            "errors": [],
-        },
-    )
-    text = parser.format_failures_llm(result)
-    assert "lib/api.ts:33:8" in text
-    assert "ERROR" in text
-    assert "sql-injection" in text
-    assert "Possible SQL injection" in text

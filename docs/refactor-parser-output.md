@@ -135,13 +135,16 @@ changes needed. Unmigrated parsers continue working exactly as before.
 
 For each parser, add `parse()` and delete all legacy methods and tests for those methods.
 
-**Migrated (2/14):**
+**Migrated (5/14):**
 - `eslint` — `parse()` implemented; all legacy methods and tests deleted
 - `vitest_cov` — `parse()` implemented; all legacy methods and tests deleted
+- `depcruise` — `parse()` implemented; all legacy methods and tests deleted
+- `semgrep` — `parse()` implemented; all legacy methods and tests deleted
+- `stryker` — `parse()` implemented; all legacy methods and tests deleted
 
-**Remaining (12/14):**
-`stylelint`, `ruff`, `tsc`, `semgrep`, `depcruise`, `import_linter`, `pytest`,
-`pytest_cov`, `vitest`, `stryker`, `git_diff`, `default`
+**Remaining (9/14):**
+`stylelint`, `ruff`, `tsc`, `import_linter`, `pytest`,
+`pytest_cov`, `vitest`, `git_diff`, `default`
 
 Migration checklist per parser:
 1. Add `def parse(self, output: str) -> ParsedOutput` — implement using `Finding`,
@@ -192,4 +195,6 @@ even though it depends on the same parsed data.
 The fix: parsers return **typed structured data**, and a single `GenericFormatter` handles
 all rendering. Parsers drop to one method.
 
----
+## Updating the skill
+
+Once we're done with the refactoring, we also need to update our skill `_new-runner-type`. While we're at it, we should also rename it to `_new-parser`

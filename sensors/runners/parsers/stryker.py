@@ -6,8 +6,8 @@ Metrics match Stryker's documented definitions:
 https://stryker-mutator.io/docs/mutation-testing-elements/mutant-states-and-metrics
 
 - detected = Killed + Timeout
-- valid (for \"of total\") = Killed + Timeout + Survived + NoCoverage
-- covered (for \"of covered\") = Killed + Timeout + Survived (= detected + Survived)
+- valid (for "of total") = Killed + Timeout + Survived + NoCoverage
+- covered (for "of covered") = Killed + Timeout + Survived (= detected + Survived)
 - mutation score (of total) = detected / valid * 100
 - mutation score based on covered code = detected / covered * 100
 
@@ -21,10 +21,9 @@ per-file ``source`` text or per-survivor details in the parsed output, only coun
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any, Final
 
-from sensors.config import RunnerResult, ScoreInfo
+from sensors.config import Metric, ParsedOutput, ScoreInfo
 
 from .base import OutputParser
 
@@ -51,27 +50,6 @@ def _empty_count_map() -> dict[str, int]:
     return {k: 0 for k in _STATUS_TO_KEY.values()} | {"unknown": 0}
 
 
-def _parse_error_result(parse_error: str, raw: str) -> RunnerResult:
-    return RunnerResult(
-        timestamp=datetime.now(),
-        success=False,
-        output={"parseError": parse_error, "raw": raw},
-    )
-
-
-def _load_stryker_report(text: str) -> dict[str, Any] | RunnerResult:
-    """Return parsed report data, or an error RunnerResult."""
-    if not text:
-        return _parse_error_result("empty output", "")
-    data = json.loads(text)
-    if not isinstance(data, dict):
-        return _parse_error_result("expected JSON object", text[:500])
-    files = data.get("files")
-    if not isinstance(files, dict):
-        return _parse_error_result("missing or invalid 'files'", text[:500])
-    return data
-
-
 def _count_mutant_statuses(files: dict[str, Any]) -> dict[str, int]:
     cmap = _empty_count_map()
     for file_result in files.values():
@@ -91,155 +69,100 @@ def _count_mutant_statuses(files: dict[str, Any]) -> dict[str, int]:
     return cmap
 
 
-def _build_stryker_output(data: dict[str, Any], cmap: dict[str, int]) -> dict[str, Any]:
-    killed, timeout = cmap["killed"], cmap["timeout"]
-    survived, noc = cmap["survived"], cmap["noCoverage"]
-    detected = killed + timeout
-    valid = killed + timeout + survived + noc
-    covered = killed + timeout + survived
-    thresholds = data.get("thresholds") if isinstance(data.get("thresholds"), dict) else {}
-    return {
-        "schemaVersion": data.get("schemaVersion", ""),
-        "counts": {
-            **cmap,
-            "detected": detected,
-            "valid": valid,
-            "covered": covered,
-        },
-        "mutationScoreOfTotal": _pct(detected, valid),
-        "mutationScoreOfCovered": _pct(detected, covered),
-        "thresholds": thresholds,
-    }
-
-
 class StrykerParser(OutputParser):
     """Parser for Stryker / mutation-testing-elements JSON report files."""
 
-    async def parse_output(self, output: str) -> RunnerResult:
+    def parse(self, output: str) -> ParsedOutput:
         try:
             text = output.strip()
-            loaded = _load_stryker_report(text)
-            if isinstance(loaded, RunnerResult):
-                return loaded
+            if not text:
+                return ParsedOutput(
+                    success=False,
+                    summary="Parse error: empty output",
+                    score=ScoreInfo(value=0, direction="more", description="Mutation score (% of covered)"),
+                    extra={"parseError": "empty output"},
+                )
 
-            cmap = _count_mutant_statuses(loaded["files"])
-            return RunnerResult(
-                timestamp=datetime.now(),
+            data = json.loads(text)
+            if not isinstance(data, dict):
+                return ParsedOutput(
+                    success=False,
+                    summary="Parse error: expected JSON object",
+                    score=ScoreInfo(value=0, direction="more", description="Mutation score (% of covered)"),
+                    extra={"parseError": "expected JSON object"},
+                )
+            files = data.get("files")
+            if not isinstance(files, dict):
+                return ParsedOutput(
+                    success=False,
+                    summary="Parse error: missing or invalid 'files'",
+                    score=ScoreInfo(value=0, direction="more", description="Mutation score (% of covered)"),
+                    extra={"parseError": "missing or invalid 'files'"},
+                )
+
+            cmap = _count_mutant_statuses(files)
+            killed, timeout = cmap["killed"], cmap["timeout"]
+            survived, noc = cmap["survived"], cmap["noCoverage"]
+            detected = killed + timeout
+            valid = killed + timeout + survived + noc
+            covered = killed + timeout + survived
+
+            score_of_total = _pct(detected, valid)
+            score_of_covered = _pct(detected, covered)
+
+            thresholds = data.get("thresholds") if isinstance(data.get("thresholds"), dict) else {}
+            high = thresholds.get("high") if thresholds else None
+            threshold_val = float(high) if isinstance(high, (int, float)) else None
+
+            summary = (
+                f"{score_of_covered:.2f}% of covered "
+                f"({score_of_total:.2f}% of total, {survived} survived, "
+                f"{detected}/{valid} valid)"
+            )
+
+            return ParsedOutput(
                 success=True,
-                output=_build_stryker_output(loaded, cmap),
+                summary=summary,
+                score=ScoreInfo(
+                    value=max(0, min(100, int(round(score_of_covered)))),
+                    direction="more",
+                    description="Mutation score (% of covered)",
+                ),
+                metrics=[
+                    Metric(
+                        "mutationScoreOfCovered",
+                        "Mutation score (covered)",
+                        score_of_covered,
+                        unit="%",
+                        direction="more",
+                        threshold=threshold_val,
+                    ),
+                    Metric(
+                        "mutationScoreOfTotal",
+                        "Mutation score (total)",
+                        score_of_total,
+                        unit="%",
+                        direction="more",
+                    ),
+                    Metric("killed", "Killed", killed),
+                    Metric("survived", "Survived", survived),
+                    Metric("noCoverage", "No coverage", noc),
+                    Metric("detected", "Detected", detected),
+                    Metric("valid", "Valid", valid),
+                    Metric("covered", "Covered", covered),
+                ],
             )
         except json.JSONDecodeError as e:
-            return _parse_error_result(str(e), output[:500])
+            return ParsedOutput(
+                success=False,
+                summary=f"Parse error: {e}",
+                score=ScoreInfo(value=0, direction="more", description="Mutation score (% of covered)"),
+                extra={"parseError": str(e)},
+            )
         except Exception as e:
-            return _parse_error_result(str(e), output[:500])
-
-    def calculate_score(self, result: RunnerResult) -> ScoreInfo:
-        """Main trend score: mutation score of covered code (0–100, higher is better)."""
-        if result.output.get("parseError"):
-            return ScoreInfo(value=0, direction="more", description="Mutation score (% of covered)")
-        pct = result.output.get("mutationScoreOfCovered")
-        v = int(round(float(pct))) if isinstance(pct, (int, float)) else 0
-        return ScoreInfo(
-            value=max(0, min(100, v)),
-            direction="more",
-            description="Mutation score (% of covered)",
-        )
-
-    def _scores(self, result: RunnerResult) -> tuple[float, float]:
-        out = result.output
-        t = out.get("mutationScoreOfTotal", 0.0)
-        c = out.get("mutationScoreOfCovered", 0.0)
-        try:
-            ft = float(t)
-        except (TypeError, ValueError):
-            ft = 0.0
-        try:
-            fc = float(c)
-        except (TypeError, ValueError):
-            fc = 0.0
-        return ft, fc
-
-    def _summary_line(self, result: RunnerResult) -> str:
-        if result.output.get("parseError"):
-            return str(result.output.get("parseError", "parse error"))
-        ft, fc = self._scores(result)
-        c = result.output.get("counts", {})
-        return (
-            f"{fc:.2f}% of covered "
-            f"({ft:.2f}% of total, {c.get('survived', 0)} survived, "
-            f"{c.get('detected', 0)}/{c.get('valid', 0)} valid)"
-        )
-
-    def _threshold_color_terminal(self, result: RunnerResult) -> str:
-        if not result.success:
-            return "red"
-        ft, fc = self._scores(result)
-        thresholds = result.output.get("thresholds") or {}
-        high = thresholds.get("high")
-        low = thresholds.get("low")
-        try:
-            if isinstance(high, (int, float)) and fc >= float(high):
-                return "green"
-            if isinstance(low, (int, float)) and fc >= float(low):
-                return "yellow"
-        except (TypeError, ValueError):
-            pass
-        return "red"
-
-    # -- Details --
-
-    def format_details_terminal(self, result: RunnerResult) -> str:
-        if result.output.get("parseError"):
-            return f"[red]{result.output.get('parseError', 'error')}[/red]"
-        color = self._threshold_color_terminal(result)
-        return f"[{color}]{self._summary_line(result)}[/{color}]"
-
-    def format_details_html(self, result: RunnerResult) -> str:
-        if result.output.get("parseError"):
-            return f'<span class="sensors-error">{result.output.get("parseError", "error")}</span>'
-        css = "sensors-success" if result.success else "sensors-error"
-        if result.success:
-            _, fc = self._scores(result)
-            thresholds = result.output.get("thresholds") or {}
-            high = thresholds.get("high")
-            try:
-                if isinstance(high, (int, float)) and fc < float(high):
-                    css = "sensors-warn"
-            except (TypeError, ValueError):
-                pass
-        return f'<span class="{css}">{self._summary_line(result)}</span>'
-
-    def format_details_llm(self, result: RunnerResult) -> str:
-        return self._summary_line(result)
-
-    # -- Failures --
-
-    def format_failures_terminal(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        if result.output.get("parseError"):
-            return f"  [red]Parse error: {result.output['parseError']}[/red]"
-        return self._format_failures_threshold(result, "terminal")
-
-    def format_failures_html(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        if result.output.get("parseError"):
-            return f'<span class="sensors-error">Parse error: {result.output["parseError"]}</span>'
-        return self._format_failures_threshold(result, "html")
-
-    def format_failures_llm(self, result: RunnerResult) -> str:
-        if result.success:
-            return ""
-        if result.output.get("parseError"):
-            return f"Parse error: {result.output['parseError']}"
-        return self._format_failures_threshold(result, "llm")
-
-    def _format_failures_threshold(self, result: RunnerResult, style: str) -> str:
-        """Short check output: same metrics as details (scores and counts), no mutant listing."""
-        line = self._summary_line(result)
-        if style == "terminal":
-            return f"  [red]{line}[/red]"
-        if style == "html":
-            return f'<span class="sensors-error">{line}</span>'
-        return f"  {line}"
+            return ParsedOutput(
+                success=False,
+                summary=f"Parse error: {e}",
+                score=ScoreInfo(value=0, direction="more", description="Mutation score (% of covered)"),
+                extra={"parseError": str(e)},
+            )

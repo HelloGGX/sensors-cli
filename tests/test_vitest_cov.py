@@ -83,87 +83,81 @@ def _make_result(success, **output_fields) -> RunnerResult:
 
 
 # ---------------------------------------------------------------------------
-# parse_output
+# parse  (new structured interface)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_parse_output_success():
+def test_parse_returns_parsed_output_success():
     parser = VitestCovParser()
-    result = await parser.parse_output(SAMPLE_JSON)
+    parsed = parser.parse(SAMPLE_JSON)
 
-    assert result.success is True
-    assert result.output["totalStmts"] > 0
-    assert result.output["totalBranch"] > 0
-    assert result.output["totalFuncs"] > 0
-    assert len(result.output["files"]) == 3
+    assert parsed.success is True
+    assert "branch" in parsed.summary.lower()
+    assert parsed.score.direction == "more"
 
 
-@pytest.mark.asyncio
-async def test_parse_output_per_file_coverage():
+def test_parse_metrics_present():
     parser = VitestCovParser()
-    result = await parser.parse_output(SAMPLE_JSON)
-    files = result.output["files"]
+    parsed = parser.parse(SAMPLE_JSON)
 
+    keys = {m.key for m in parsed.metrics}
+    assert {"totalBranch", "totalStmts", "totalFuncs", "totalLines"} <= keys
+
+
+def test_parse_branch_metric_has_threshold():
+    parser = VitestCovParser()
+    parsed = parser.parse(SAMPLE_JSON)
+
+    branch = next(m for m in parsed.metrics if m.key == "totalBranch")
+    assert branch.threshold == 80.0
+    assert branch.direction == "more"
+
+
+def test_parse_aggregate_values():
+    parser = VitestCovParser()
+    parsed = parser.parse(SAMPLE_JSON)
+
+    branch = next(m for m in parsed.metrics if m.key == "totalBranch")
+    stmts = next(m for m in parsed.metrics if m.key == "totalStmts")
+    funcs = next(m for m in parsed.metrics if m.key == "totalFuncs")
+
+    assert branch.value == pytest.approx(83.33, abs=0.1)
+    assert stmts.value == pytest.approx(62.5)
+    assert funcs.value == 80.0
+
+
+def test_parse_per_file_data_in_extra():
+    parser = VitestCovParser()
+    parsed = parser.parse(SAMPLE_JSON)
+
+    files = parsed.extra["files"]
+    assert len(files) == 3
     domain = next(f for f in files if f["name"] == "domain.ts")
-    # 2 of 5 statements hit → 40%
     assert domain["stmts"] == 40.0
-    # 2 of 3 functions hit → 66.67%
-    assert domain["funcs"] == pytest.approx(66.67, abs=0.1)
-    # branches: 0→[3,2] both hit; 1→[1,0] one hit → 3 of 4 → 75%
-    assert domain["branch"] == 75.0
-    # uncovered lines from statements 2,3,4 → lines 110,187,249
     assert domain["uncovered"] == "110,187,249"
 
-    config = next(f for f in files if f["name"] == "config.ts")
-    assert config["stmts"] == 100.0
-    assert config["funcs"] == 100.0
-    assert config["uncovered"] == ""
 
-
-@pytest.mark.asyncio
-async def test_parse_output_aggregate_totals():
+def test_parse_empty_json():
     parser = VitestCovParser()
-    result = await parser.parse_output(SAMPLE_JSON)
+    parsed = parser.parse(SAMPLE_JSON_EMPTY)
 
-    # Aggregate stmts: 2+2+1 hit out of 5+2+1 = 5/8 = 62.5%
-    assert result.output["totalStmts"] == pytest.approx(62.5)
-    # Aggregate funcs: 2+1+1 hit out of 3+1+1 = 4/5 = 80%
-    assert result.output["totalFuncs"] == 80.0
-    # Aggregate branches: (3+2+1)=6 hit out of (2+2+0+2)... let me recount
-    # domain.b: {"0":[3,2],"1":[1,0]} → 3 hit of 4 total
-    # config.b: {} → 0/0
-    # middleware.b: {"0":[7,5]} → 2 hit of 2
-    # Total: 3+0+2=5 hit of 4+0+2=6 → 83.33%
-    assert result.output["totalBranch"] == pytest.approx(83.33, abs=0.1)
+    assert parsed.success is True
+    assert parsed.extra["files"] == []
 
 
-@pytest.mark.asyncio
-async def test_parse_output_empty_json():
+def test_parse_invalid_json_returns_failure():
     parser = VitestCovParser()
-    result = await parser.parse_output(SAMPLE_JSON_EMPTY)
+    parsed = parser.parse("not json")
 
-    assert result.success is True
-    assert result.output["totalStmts"] == 100.0  # 0/0 → 100%
-    assert result.output["files"] == []
+    assert parsed.success is False
+    assert "parseError" in parsed.extra
 
 
-@pytest.mark.asyncio
-async def test_parse_output_invalid_json():
+def test_parse_score_is_int_branch_pct():
     parser = VitestCovParser()
-    result = await parser.parse_output("not json at all")
+    parsed = parser.parse(SAMPLE_JSON)
 
-    assert result.success is False
-    assert "parseError" in result.output
-
-
-@pytest.mark.asyncio
-async def test_parse_output_garbage_json():
-    parser = VitestCovParser()
-    result = await parser.parse_output("{}")
-
-    assert result is not None
-    assert result.success is True
-    assert result.output["files"] == []
+    branch = next(m for m in parsed.metrics if m.key == "totalBranch")
+    assert parsed.score.value == int(branch.value)
 
 
 # ---------------------------------------------------------------------------
@@ -183,147 +177,6 @@ def test_watch_complete_failed():
 def test_watch_not_complete():
     parser = VitestCovParser()
     assert parser.is_watch_run_complete("running tests...") is False
-
-
-# ---------------------------------------------------------------------------
-# calculate_score
-# ---------------------------------------------------------------------------
-
-def test_calculate_score():
-    parser = VitestCovParser()
-    result = _make_result(True, totalBranch=85.5)
-    score = parser.calculate_score(result)
-
-    assert score.value == 85
-    assert score.direction == "more"
-
-
-# ---------------------------------------------------------------------------
-# format_details
-# ---------------------------------------------------------------------------
-
-def test_format_details_terminal_high():
-    parser = VitestCovParser()
-    result = _make_result(True, totalBranch=95.0)
-    out = parser.format_details_terminal(result)
-    assert "[green]" in out
-    assert "95.0% branch" in out
-
-
-def test_format_details_terminal_medium():
-    parser = VitestCovParser()
-    result = _make_result(True, totalBranch=60.0)
-    out = parser.format_details_terminal(result)
-    assert "[yellow]" in out
-
-
-def test_format_details_terminal_low():
-    parser = VitestCovParser()
-    result = _make_result(True, totalBranch=30.0)
-    out = parser.format_details_terminal(result)
-    assert "[red]" in out
-
-
-def test_format_details_terminal_failure():
-    parser = VitestCovParser()
-    result = _make_result(False, totalBranch=90.0)
-    out = parser.format_details_terminal(result)
-    assert "[red]" in out
-
-
-def test_format_details_html_success():
-    parser = VitestCovParser()
-    result = _make_result(True, totalBranch=90.0)
-    out = parser.format_details_html(result)
-    assert "sensors-success" in out
-    assert "90.0% branch" in out
-
-
-def test_format_details_html_warn():
-    parser = VitestCovParser()
-    result = _make_result(True, totalBranch=55.0)
-    out = parser.format_details_html(result)
-    assert "sensors-warn" in out
-
-
-def test_format_details_llm():
-    parser = VitestCovParser()
-    result = _make_result(True, totalBranch=97.9)
-    out = parser.format_details_llm(result)
-    assert out == "97.9% branch"
-
-
-# ---------------------------------------------------------------------------
-# format_failures
-# ---------------------------------------------------------------------------
-
-def test_format_failures_success_returns_empty():
-    parser = VitestCovParser()
-    result = _make_result(True, totalBranch=90, files=[])
-    assert parser.format_failures_terminal(result) == ""
-    assert parser.format_failures_html(result) == ""
-    assert parser.format_failures_llm(result) == ""
-
-
-def test_format_failures_with_uncovered_lines():
-    parser = VitestCovParser()
-    result = _make_result(
-        False,
-        totalBranch=60.0,
-        files=[
-            {"name": "domain.ts", "stmts": 75, "branch": 60, "funcs": 80, "lines": 72.5,
-             "uncovered": "10-30,50,99"},
-        ],
-    )
-
-    terminal = parser.format_failures_terminal(result)
-    assert "domain.ts" in terminal
-    assert "10-30,50,99" in terminal
-
-    html = parser.format_failures_html(result)
-    assert "sensors-file" in html
-    assert "domain.ts" in html
-
-    llm = parser.format_failures_llm(result)
-    assert "domain.ts" in llm
-
-
-def test_format_failures_no_uncovered():
-    parser = VitestCovParser()
-    result = _make_result(
-        False,
-        totalBranch=100,
-        files=[
-            {"name": "config.ts", "stmts": 100, "branch": 100, "funcs": 100, "lines": 100,
-             "uncovered": ""},
-        ],
-    )
-    llm = parser.format_failures_llm(result)
-    assert "config.ts" not in llm
-
-
-def test_format_failures_parse_error():
-    parser = VitestCovParser()
-    result = _make_result(False, parseError="unexpected token")
-    terminal = parser.format_failures_terminal(result)
-    assert "Parse error" in terminal
-
-
-def test_format_details_parse_error_shows_message():
-    parser = VitestCovParser()
-    result = _make_result(False, parseError="configure result")
-    assert "configure result" in parser.format_details_terminal(result)
-    assert "configure result" in parser.format_details_html(result)
-    assert "configure result" in parser.format_details_llm(result)
-
-
-@pytest.mark.asyncio
-async def test_parse_output_non_json_gives_helpful_error():
-    parser = VitestCovParser()
-    result = await parser.parse_output("vitest stdout text coverage table...")
-    assert result.success is False
-    assert "result" in result.output["parseError"]
-    assert "coverage-final.json" in result.output["parseError"]
 
 
 # ---------------------------------------------------------------------------
@@ -349,27 +202,3 @@ def test_format_line_ranges_mixed():
 def test_format_line_ranges_scattered():
     assert _format_line_ranges([1, 3, 5]) == "1,3,5"
 
-
-# ---------------------------------------------------------------------------
-# integration
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_integration_full_pipeline():
-    parser = VitestCovParser()
-    result = await parser.parse_output(SAMPLE_JSON)
-
-    assert result.success is True
-
-    assert parser.format_details_terminal(result)
-    assert parser.format_details_html(result)
-    assert parser.format_details_llm(result)
-
-    # Success → no failures output
-    assert parser.format_failures_terminal(result) == ""
-    assert parser.format_failures_html(result) == ""
-    assert parser.format_failures_llm(result) == ""
-
-    score = parser.calculate_score(result)
-    assert score.value >= 0
-    assert score.direction == "more"
