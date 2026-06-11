@@ -37,7 +37,6 @@ The parser looks for the **first JSON object** in stdout. Text before and after 
   "guidance": [
     {
       "rule": "F841",
-      "summary": "Unused variable",
       "body": "Remove the variable or use it in your code."
     }
   ],

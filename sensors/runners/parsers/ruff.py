@@ -107,8 +107,7 @@ class RuffParser(OutputParser):
             body = str(entry.get("guidance", "")).strip()
             if not body:
                 continue
-            summary = str(entry.get("short", "")).strip() or None
-            blocks.append(GuidanceBlock(rule=str(code), body=body, summary=summary))
+            blocks.append(GuidanceBlock(rule=str(code), body=body))
         return blocks
 
     @staticmethod

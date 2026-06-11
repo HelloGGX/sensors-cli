@@ -180,15 +180,14 @@ class TestFailures:
         assert "no-explicit-any" in out.failures_terminal
         assert "Use a specific type" in out.failures_terminal
 
-    def test_guidance_with_summary_in_terminal(self):
+    def test_guidance_body_rendered_in_terminal(self):
         guidance = GuidanceBlock(
             rule="RUF001",
-            summary="Ambiguous unicode character",
             body="Replace with ASCII equivalent.",
         )
         out = GenericFormatter().format(_parsed(success=False, guidance=[guidance]))
         assert "RUF001" in out.failures_terminal
-        assert "Ambiguous unicode character" in out.failures_terminal
+        assert "Replace with ASCII equivalent." in out.failures_terminal
 
     def test_guidance_rendered_in_html(self):
         guidance = GuidanceBlock(rule="no-console", body="Use logger instead.")

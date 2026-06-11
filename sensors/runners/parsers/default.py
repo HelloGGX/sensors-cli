@@ -113,8 +113,7 @@ def _to_guidance(raw_guidance: Any) -> list[GuidanceBlock]:
         body = str(raw.get("body", ""))
         if not rule or not body:
             continue
-        summary = raw.get("summary")
-        guidance.append(GuidanceBlock(rule=rule, body=body, summary=summary))
+        guidance.append(GuidanceBlock(rule=rule, body=body))
     return guidance
 
 

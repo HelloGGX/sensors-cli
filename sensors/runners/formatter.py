@@ -62,7 +62,7 @@ class GenericFormatter:
         return _render_finding_text(f, loc, style)
 
     def _render_guidance(self, g: GuidanceBlock, style: str) -> str:
-        header = g.rule + (f" — {g.summary}" if g.summary else "")
+        header = g.rule
         if style == "terminal":
             lines = [f"  [yellow]{header}[/yellow]"]
             lines += [f"  [dim]{line}[/dim]" for line in g.body.splitlines()]

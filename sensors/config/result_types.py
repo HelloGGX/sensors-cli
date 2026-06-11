@@ -127,7 +127,6 @@ class GuidanceBlock:
 
     rule: str
     body: str                    # multi-line explanation
-    summary: str | None = None   # short one-liner; ruff only, None for eslint
 
 
 @dataclass
@@ -136,9 +135,10 @@ class ParsedOutput:
 
     success: bool
     summary: str        # plain-text one-liner, e.g. "2 errors, 1 warning" or "72% coverage"
-    score: ScoreInfo    # previously returned by calculate_score()
+    score: ScoreInfo    # basis of trend comparison and sometimes success/failure determination
 
     findings: list[Finding] = field(default_factory=list)
+    # TODO: It seems like we are not reading the metrics anywhere at the moment?!
     metrics: list[Metric] = field(default_factory=list)
     guidance: list[GuidanceBlock] = field(default_factory=list)
 

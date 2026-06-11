@@ -116,7 +116,6 @@ def test_parse_builds_findings_metrics_guidance_and_extra():
         "guidance": [
             {
                 "rule": "F841",
-                "summary": "Unused variable",
                 "body": "Remove variable or use it.",
             }
         ],
@@ -140,7 +139,7 @@ def test_parse_builds_findings_metrics_guidance_and_extra():
 
     assert len(parsed.guidance) == 1
     assert parsed.guidance[0].rule == "F841"
-    assert parsed.guidance[0].summary == "Unused variable"
+    assert parsed.guidance[0].body == "Remove variable or use it."
 
     assert parsed.extra["rawTable"][0]["pct"] == 72
 

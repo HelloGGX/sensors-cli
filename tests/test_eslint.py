@@ -157,7 +157,6 @@ def test_parse_triggered_rules_become_guidance():
     g = parsed.guidance[0]
     assert g.rule == "@typescript-eslint/no-explicit-any"
     assert "We want things to be typed" in g.body
-    assert g.summary is None
 
 
 def test_parse_clean_is_success():
