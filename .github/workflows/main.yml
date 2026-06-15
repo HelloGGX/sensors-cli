@@ -8,6 +8,9 @@ on:
       - ".sensors/sensors-cli.sensors.yaml"
       - ".claude/**"
       - ".vscode/**"
+      - "README.md"
+      - "CLAUDE.md"
+      - "AGENTS.md"
   pull_request:
 
 jobs:
