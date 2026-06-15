@@ -2,6 +2,8 @@
 
 An **experimental** little "sidecar" system that can run a bunch of code quality sensors next to a coding agent. It can run linting, tests, and other checks on a schedule or in watch mode, persists structured state under `.sensors/` in the target codebase, and exposes a **`sensors`** CLI for running the service, checking the sensor status, or displaying the status in a human readable format.
 
+Companion repository to this article: [Maintainability sensors for coding agents](https://martinfowler.com/articles/sensors-for-coding-agents.html)
+
 Use `/_local-setup` skill to set it up on your machine (or use the `SKILL.md` file as documentation if you want to do it manually).
 
 **Platform note:** The control plane uses **Unix domain sockets**, tested only on MacOS.
