@@ -12,7 +12,7 @@ jobs:
   dep-freshness:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       issues: write
       id-token: write
 
@@ -33,12 +33,22 @@ jobs:
       - name: Run dependency freshness check
         id: freshness
         run: |
-          echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          short_sha="$(git rev-parse --short HEAD)"
+          report_dir="docs/reports/dependency-freshness"
+          report_path="${report_dir}/$(date -u +%F)_dep-freshness_${short_sha}.md"
+          raw_path="${report_dir}/$(date -u +%F)_dep-freshness_${short_sha}.txt"
+
+          mkdir -p "${report_dir}"
+
+          echo "short=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "report_path=${report_path}" >> "$GITHUB_OUTPUT"
+          echo "raw_path=${raw_path}" >> "$GITHUB_OUTPUT"
+
           {
             echo "Analyzed git commit: $(git rev-parse HEAD)"
             echo ""
             uv run python .sensors/security/fresh.py 2>&1 | sed 's/\x1b\[[0-9;]*m//g'
-          } | tee freshness-output.txt || true
+          } | tee "${raw_path}" || true
 
       - name: Analyse results with Claude and write report
         uses: anthropics/claude-code-action@v1
@@ -48,48 +58,20 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: "--allowedTools Read,Write,WebFetch,WebSearch,Bash --max-turns 20"
           prompt: |
-            Read the file `freshness-output.txt`.
+            Read the file `${{ steps.freshness.outputs.raw_path }}`.
 
-            Write a markdown report to `dep-freshness-report.md`, make sure to do research both in the codebase
-            and if necessary get more information from PyPI or the internet, before you make any recommendations.
+            Based on that information, do an analysis and create recommendations.
+            Be sure to do research both in the codebase and if necessary get more 
+            information from PyPI or the internet, before you make any recommendations.
 
-            STRUCTURE:
+            For each recommendation, consider creating a GH issue to track it.
+            Finally, write a markdown report to `${{ steps.freshness.outputs.report_path }}`.
 
-            # Dependency Freshness Report
-
-            Brief one-paragraph summary of overall health.
-
-            ## Flagged packages
-
-            For each flagged package (errors first, then warnings), create a section:
-
-            ### `<package-name>`
-            - **Status**: error / warning
-            - **Issues**: list of issues from the check output
-            - **Used for**: short description of what it does in this project (not just what it does in general, but what you found it does in THIS project)
-            - **Recommendation**: one of:
-              - Remove -- if the package does not appear to be genuinely used in this codebase
-              - Replace -- suggest a more current alternative (name it if you know one)
-              - Inline -- if the functionality is small enough to reimplement
-              - Keep / Monitor -- if it is widely used, actively maintained upstream despite the flag, or the risk is low
-
-            ## Summary table
-
-            | Package | Issues | Recommendation |
-            |---------|--------|----------------|
-            | ...     | ...    | ...            |
-
-
-            Be concise and actionable.
-            When your recommendation is based on a web link or further research on the package registry, add that source.
-
-            ---
-
-            GITHUB ISSUE MANAGEMENT:
+            _____GH ISSUES_____
 
             !! This will only work if GH Issues are activated for this repository. As soon as it turns out they are not, just skip this step and mention at the end of your report that you couldn't create any issues because of that.
 
-            After writing the report, manage GitHub issues for actionable findings using the `gh` CLI.
+            Manage GitHub issues for actionable findings using the `gh` CLI.
 
             1. Ensure the tracking label exists (safe to re-run):
                gh label create dep-freshness --color "e4e669" --description "Dependency freshness follow-up" --force
@@ -114,13 +96,59 @@ jobs:
 
             Only create issues for Remove / Replace / Inline recommendations. Do not create issues for Keep / Monitor.
 
+            _____REPORT_____
+
+            Be concise and actionable.
+            When your recommendation is based on a web link or further research on the package in the registry, add that source.
+
+            # Dependency Freshness Report
+
+            Brief one-paragraph summary of overall health.
+
+            ## Flagged packages
+
+            For each flagged package (errors first, then warnings), create a section:
+
+            ### `<package-name>`
+            - **Status**: error / warning
+            - **Issues**: list of issues from the check output
+            - **Used for**: short description of what it does in this project (not just what it does in general, but what you found it does in THIS project)
+            - **Recommendation**: one of:
+              - Remove — if the package does not appear to be genuinely used in this codebase
+              - Replace — suggest a more current alternative (name it if you know one)
+              - Inline — if the functionality is small enough to reimplement
+              - Keep / Monitor — if it is widely used, actively maintained upstream despite the flag, or the risk is low
+
+            ## Summary table
+
+            | Package | Issues | Recommendation | Issue                                                                                   |
+            |---------|--------|----------------|-----------------------------------------------------------------------------------------|
+            | ...     | ...    | ...            | Created: [number](issue-url) / Already exists: [number](issue-url) / None (and why not) |
+
+
+      - name: Commit freshness report
+        if: ${{ inputs.commit == '' && github.ref_type == 'branch' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add "${{ steps.freshness.outputs.report_path }}" "${{ steps.freshness.outputs.raw_path }}"
+
+          if git diff --cached --quiet; then
+            echo "No report changes to commit"
+            exit 0
+          fi
+
+          git commit -m "chore(dep-freshness): add report for $(git rev-parse --short HEAD)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
       - name: Publish report to job summary
-        run: cat dep-freshness-report.md >> $GITHUB_STEP_SUMMARY
+        run: cat "${{ steps.freshness.outputs.report_path }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload report as artifact
         uses: actions/upload-artifact@v4
         with:
           name: dep-freshness-report-${{ github.run_id }}-${{ steps.freshness.outputs.short }}
           path: |
-            dep-freshness-report.md
-            freshness-output.txt
+            ${{ steps.freshness.outputs.report_path }}
+            ${{ steps.freshness.outputs.raw_path }}
