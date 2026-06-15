@@ -29,7 +29,7 @@ jobs:
             https://github.com/vladikk/modularity.git
           plugins: |
             modularity@vladikk-modularity
-          claude_args: "--allowedTools Read,Write --max-turns 30"
+          claude_args: "--allowedTools Read,Write --max-turns 200"
           prompt: |
             Run /modularity:review on this codebase, then write a full report following the instructions below.
 
