@@ -37,30 +37,12 @@ sensors snapshot .
 
 ## Configuration
 
-Place one or more `*.sensors.yaml` files under `.sensors/`. If only one exists, it is chosen automatically; otherwise pass `--config myproj.sensors.yaml`.
+The CLI looks for a `*.sensors.yaml` file under `.sensors/`. 
 
-State and control sidecars are named from the config stem, e.g. `myproj.sensors.yaml` → `myproj.state.json`, `myproj.control.json`, `myproj.sock`.
-
-Example:
-
-```yaml
-version: 1
-runners:
-  - name: eslint
-    parser: eslint
-    enabled: true
-    mode: interval
-    command: npx eslint --format json .
-    interval: 5000
-
-  - name: tests
-    parser: vitest
-    enabled: true
-    mode: watch
-    command: npx vitest --watch
-```
-
-Optional **`workingDir`** on a runner: relative path from the project root (e.g. `./ui`) if commands should not run at the repo root.
+There are some skills in this repo that document this setup more and that you can reuse:
+- `.claude/skills/sensors_config-default` - a minimalist default setup that tries to determine one sensor example from your codebase. Use this to just get a taste
+- `.claude/skills/sensors_config-typescript` - my full Typescript sensors setup
+- `.claude/skills/sensors_config-python` - my full Python sensors setup
 
 ## Parsers
 
