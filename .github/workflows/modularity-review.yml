@@ -1,0 +1,57 @@
+name: Modularity Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Git commit SHA to analyze, full 40-character SHA (omit for the default ref at workflow run time)
+        required: false
+        type: string
+
+jobs:
+  modularity-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.commit != '' && inputs.commit || github.sha }}
+
+      - name: Run modularity review
+        id: review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          plugin_marketplaces: |
+            https://github.com/vladikk/modularity.git
+          plugins: |
+            modularity@vladikk-modularity
+          claude_args: "--allowedTools Read,Write --max-turns 30"
+          prompt: |
+            Run /modularity:review on this codebase, then write a full report following the instructions below.
+
+            ### WRITE FOR AN INEXPERIENCED DEVELOPER
+
+            Imagine an audience of engineers at the beginning of their career, they might not know some of the terms used here, and need examples and simple language. You can refer to the technical terminology, like the types of coupling, in brackets, but add explanations, and don't assume too much code design expertise.
+
+            ### VISUALISE
+
+            Use **mermaid** diagrams where it clarifies. In particular, use mermaid to visualise before/after of issues and your recommendations. (Note: Use <br/> for line breaks in the diagrams, not \n)
+
+            ### Output format
+
+            We don't need HTML, just the markdown
+
+            When the analysis is complete, write the FULL markdown report to a file named `modularity-review.md` using the Write tool. Include the UTC review date in the report title or opening line. Do not truncate the report.
+
+      - name: Publish report to job summary
+        run: cat modularity-review.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: modularity-review-${{ github.run_id }}
+          path: modularity-review.md
