@@ -33,7 +33,7 @@ ______________________________ test_parse_input ________________________________
 E       AssertionError: assert None == 0
 
 tests/test_utils.py:15: AssertionError
-=========================== short test summary info ============================
+=========================== short test label info ============================
 FAILED tests/test_calculator.py::test_divide_by_zero - ZeroDivisionError: division by zero
 FAILED tests/test_utils.py::test_parse_input - AssertionError: assert None == 0
 ========================= 10 passed, 2 failed in 0.45s =========================

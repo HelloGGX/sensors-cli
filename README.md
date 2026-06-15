@@ -1,14 +1,16 @@
-# Sensors Sidecar
+# Sensors Sidecar CLI
 
-An **experimental** continuous code quality monitoring system. It can run linting, tests, and other checks on a schedule or in watch mode, persists structured state under `.sensors/` in the target codebase, and exposes a **`sensors`** CLI for running the service, checking the sensor status, or displaying the status in a human readable format.
+An **experimental** little "sidecar" system that can run a bunch of code quality sensors next to a coding agent. It can run linting, tests, and other checks on a schedule or in watch mode, persists structured state under `.sensors/` in the target codebase, and exposes a **`sensors`** CLI for running the service, checking the sensor status, or displaying the status in a human readable format.
 
 Use `/_local-setup` skill to set it up on your machine (or use the `SKILL.md` file as documentation if you want to do it manually).
 
 **Platform note:** The control plane uses **Unix domain sockets**, tested only on MacOS.
 
+This tool was more or less vibe coded, though I did do regular refactorings with AI, and used the CLI to run sensors for this codebase ("eating my own dog food"). Check out [`.sensors/sensors-cli.sensors.yaml`](./.sensors/sensors-cli.sensors.yaml) to see the sensors used here. And look at [2026-06-15_modularity-review.md](./docs/reports/2026-06-15_modularity-review.md) for examples of why quick sensors like this can help with maintainability, but can only go so far when we don't spend much time on the larger code structure...
+
 ## Commands
 
-Most commands take the **project directory** (the one that contains `.sensors/`) as the first argument. Use `.` when already `cd`’d into the project. **`sensors status --all`** does not take a path.
+(CLI needs to be installed via `uv tool install`, see `/_local-setup` skill)
 
 ```bash
 # Is the sensors service running? (exit 0 = yes, 1 = no)
