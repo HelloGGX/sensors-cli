@@ -17,22 +17,23 @@ This skill sets up sensor config files for a Python project using the supported 
 |-------------|--------|-----------------|-----------------|
 | `tests` | `pytest` | pytest | Unit/integration test results |
 | `cov` | `pytest_cov` | pytest --cov | Test coverage |
-| `ruff` (or `lint`) | `ruff` | ruff check | Code style and quality issues |
+| `ruff` (or `lint`) | `default` | ruff check via wrapper | Code style and quality issues |
 | `imports` | `import_linter` | import-linter (`lint-imports`) | Import/dependency contracts (optional) |
+| `custom` (optional) | `default` | project script emitting default-parser JSON | Project-specific maintainability checks |
 
 ### Security (tool configs → `.sensors/security/` or second ruff runner)
 
 | Sensor name | Parser | Underlying tool | What it monitors |
 |-------------|--------|-----------------|-----------------|
-| `ruff-sec` (or `security`) | `ruff` | ruff check --select S | Bandit-equivalent security rules via ruff |
+| `ruff-sec` (or `security`) | `default` | ruff check --select S via wrapper | Bandit-equivalent security rules via ruff |
 
-> Both maintainability and security ruff runners use the `ruff` parser. Split them into two sensors: one runs the project's normal rule set from `pyproject.toml` (do **not** include `S` in `[tool.ruff.lint] select`), the other runs **only** S-series (`--select S`). This keeps maintainability and security in separate feeds.
+> Both maintainability and security ruff runners use the wrapper script with the `default` parser. Split them into two sensors: one runs the project's normal rule set from `pyproject.toml` (do **not** include `S` in `[tool.ruff.lint] select`), the other runs **only** S-series (`--select S`). This keeps maintainability and security in separate feeds.
 
 ---
 
 ## Ruff custom guidance
 
-This skill includes a Ruff wrapper and overrides (in `maintainability/` relative to this skill file). It runs `ruff check` with JSON output and appends per-rule guidance for coding agents — same idea as the TypeScript skill's ESLint formatters.
+This skill includes a Ruff wrapper and overrides (in `maintainability/` relative to this skill file). By default, it emits the sensors default-parser JSON object (`findings`, optional `guidance`) so sensor runners should use `parser: default`. It can also emit Ruff-style JSON with `--sensors-format ruff` for compatibility.
 
 | File | Purpose |
 |------|---------|
@@ -49,14 +50,14 @@ Use `python` for the wrapper (it finds ruff itself). Pass ruff arguments after `
 
 ```yaml
   - name: ruff
-    parser: ruff
+    parser: default
     enabled: true
     mode: interval
     command: python ./.sensors/maintainability/ruff_guidance.py -- check src/
     interval: 10000
 
   - name: ruff-sec
-    parser: ruff
+    parser: default
     enabled: true
     mode: interval
     command: python ./.sensors/maintainability/ruff_guidance.py -- --select S check src/
@@ -142,6 +143,7 @@ Each sensor's tool config file lives inside the `.sensors/<category>/` folder, n
 
 **Copy into `.sensors/maintainability/` (from this skill):**
 - `ruff_guidance.py`, `ruff_guidance_overrides.py` — always copy when setting up ruff sensors (see above).
+- `custom_checks.py` — copy when enabling the optional `custom` sensor.
 
 Each tool that supports a `--config <path>` flag should use that flag pointing to the new location when config was moved. Ruff in `pyproject.toml` needs no `--config` flag.
 
@@ -201,7 +203,7 @@ Read `pyproject.toml`, `setup.cfg`, and any other config files to identify what'
 Pay special attention to:
 - **pytest**: verify `-v` and `--tb=short` flags are current; verify `--config` flag if using a standalone `pytest.ini`.
 - **pytest_cov**: verify `--cov=<package>`, `--cov-report=term-missing` flags and any `--cov-fail-under` option.
-- **ruff**: confirm `check` subcommand and JSON output; security runner uses `--select S`. Sensors use `ruff_guidance.py` instead of calling `ruff` directly with `--output-format`.
+- **ruff**: confirm `check` subcommand and JSON output; security runner uses `--select S`. Sensors use `ruff_guidance.py` and `parser: default`.
 - **import-linter**: verify `lint-imports` entry point and contract file location.
 
 ### Step 7 — Ask user to confirm each new sensor
@@ -246,6 +248,7 @@ For each confirmed sensor:
 2. **Ruff rules**: add or extend `[tool.ruff]` in `pyproject.toml` (see Ruff config section). Omit `S` from `select`; use a separate `ruff-sec` runner.
 3. **If a standalone tool config exists at the root** (e.g. `pytest.ini`): move it to `.sensors/<category>/` and update references.
 4. **If no config exists**: create minimal config in `pyproject.toml` or `.sensors/<category>/` as appropriate.
+5. **Optional custom checks**: if the user confirms a `custom` sensor, copy `maintainability/custom_checks.py` from this skill into `.sensors/maintainability/` and adapt its checks, target paths, and guidance text to the project.
 
 ### Step 10 — Create or update the sensor YAML file
 
@@ -289,15 +292,17 @@ runners:
 | `tests` (pytest) | 15 000 ms | Moderate speed |
 | `ruff-sec` | 30 000 ms | Same tool; security posture changes less often |
 | `imports` (import-linter) | 25 000–30 000 ms | Structural; changes less often than style |
+| `custom` (default parser) | 18 000–25 000 ms | Usually AST-heavy and project-specific |
 | `cov` (pytest --cov) | 60 000 ms | Slow; coverage shifts when tests or source change |
 
 #### Parser-specific command notes
 
 - **pytest** (tests): `uv run pytest tests/ -v --tb=short`
 - **pytest_cov** (coverage): `uv run pytest tests/ --cov=<package> --cov-report=term-missing`
-- **ruff** (maintainability): `python ./.sensors/maintainability/ruff_guidance.py -- check <src>/`
-- **ruff** (security): `python ./.sensors/maintainability/ruff_guidance.py -- --select S check <src>/`
+- **ruff** (maintainability, parser `default`): `python ./.sensors/maintainability/ruff_guidance.py -- check <src>/`
+- **ruff** (security, parser `default`): `python ./.sensors/maintainability/ruff_guidance.py -- --select S check <src>/`
 - **import_linter**: `uv run lint-imports` (requires contracts in pyproject or `.importlinter`)
+- **custom** (parser `default`): `uv run python ./.sensors/maintainability/custom_checks.py --output-format json`
 
 Replace `uv run` with the detected runner prefix from Step 2 where applicable (not for `ruff_guidance.py`).
 
@@ -325,6 +330,7 @@ After creating/updating the files, tell the user:
   maintainability/
     ruff_guidance.py         ← copied from this skill
     ruff_guidance_overrides.py
+    custom_checks.py         ← copied when optional custom sensor is enabled
     pytest.ini               ← only if moved from project root
 ```
 
@@ -351,14 +357,14 @@ runners:
     interval: 60000
 
   - name: ruff
-    parser: ruff
+    parser: default
     enabled: true
     mode: interval
     command: python ./.sensors/maintainability/ruff_guidance.py -- check my_app/
     interval: 10000
 
   - name: ruff-sec
-    parser: ruff
+    parser: default
     enabled: true
     mode: interval
     command: python ./.sensors/maintainability/ruff_guidance.py -- --select S check my_app/

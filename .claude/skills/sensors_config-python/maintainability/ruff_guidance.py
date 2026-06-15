@@ -152,23 +152,43 @@ def split_ruff_output(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
     return items, None
 
 
+def _build_findings_from_diagnostics(diagnostics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert ruff diagnostics to finding dicts (shared logic for all output formats)."""
+    cwd = Path.cwd()
+    findings = []
+    for d in diagnostics:
+        if not isinstance(d, dict) or "code" not in d:
+            continue
+        loc = d.get("location") or {}
+        filename = d.get("filename", "")
+        try:
+            file_str = str(Path(filename).relative_to(cwd))
+        except ValueError:
+            file_str = filename
+        findings.append({
+            "message": str(d.get("message", "")),
+            "severity": "error",
+            "file": file_str,
+            "line": int(loc.get("row", 0)),
+            "rule": str(d.get("code", "")),
+        })
+    return findings
+
+
 def build_json_output(
     diagnostics: list[dict[str, Any]],
     guidance_by_code: dict[str, RuleGuidance],
 ) -> list[dict[str, Any]]:
     """Ruff diagnostics unchanged; append guidance only for violations we document."""
-    if not diagnostics:
+    findings = _build_findings_from_diagnostics(diagnostics)
+    if not findings:
         return []
 
     triggered_codes = sorted(
-        {
-            str(d["code"])
-            for d in diagnostics
-            if d.get("code") in guidance_by_code
-        }
+        {f["rule"] for f in findings if f["rule"] in guidance_by_code}
     )
     if not triggered_codes:
-        return diagnostics
+        return findings
 
     rules = {
         code: {
@@ -178,7 +198,7 @@ def build_json_output(
         for code in triggered_codes
     }
     return [
-        *diagnostics,
+        *findings,
         {
             GUIDANCE_JSON_KEY: {
                 "triggered": triggered_codes,
@@ -186,6 +206,33 @@ def build_json_output(
             },
         },
     ]
+
+
+def build_default_output(
+    diagnostics: list[dict[str, Any]],
+    guidance_by_code: dict[str, RuleGuidance] | None = None,
+) -> dict[str, Any]:
+    """Convert ruff diagnostics to the sensors default parser JSON format"""
+    guidance_by_code = guidance_by_code or {}
+    findings_list = _build_findings_from_diagnostics(diagnostics)
+
+    result: dict[str, Any] = {"findings": findings_list}
+
+    # Extract and include guidance for triggered rules
+    triggered_codes = sorted(
+        {f["rule"] for f in findings_list if f["rule"] in guidance_by_code}
+    )
+    if triggered_codes:
+        guidance_list = []
+        for code in triggered_codes:
+            entry = guidance_by_code[code]
+            guidance_list.append({
+                "rule": code,
+                "body": entry.short + " " + (entry.guidance or ""),
+            })
+        result["guidance"] = guidance_list
+
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -196,6 +243,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--ruff",
         metavar="CMD",
         help="Ruff executable or 'uv' style prefix (default: auto-detect PATH, .venv, uv run)",
+    )
+    parser.add_argument(
+        "--sensors-format",
+        choices=["ruff", "default"],
+        default="default",
+        dest="sensors_format",
+        help="Output format: 'default' (sensors default parser format, default) or 'ruff' (ruff native JSON array)",
     )
     parser.add_argument(
         "ruff_args",
@@ -217,8 +271,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except FileNotFoundError as exc:
         print(exc, file=sys.stderr)
         return 2
-    output = build_json_output(diagnostics, guidance_by_code)
-    print(json.dumps(output, indent=2))
+
+    if args.sensors_format == "default":
+        print(json.dumps(build_default_output(diagnostics, guidance_by_code=guidance_by_code)))
+    else:
+        output = build_json_output(diagnostics, guidance_by_code)
+        print(json.dumps(output, indent=2))
     return exit_code
 
 
