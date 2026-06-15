@@ -430,7 +430,7 @@ async def test_populate_table_no_runners_active():
         state = StateEntry(lastUpdated=datetime.now(), runners={})
         await display._populate_table(table, state=state)
         table.add_row.assert_called_once_with(
-            "[dim]No runners active[/dim]", "", "", "", "", "", ""
+            "", "[dim]No runners active[/dim]", "", "", "", "", ""
         )
 
 

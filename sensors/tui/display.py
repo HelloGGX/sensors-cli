@@ -338,14 +338,14 @@ class DisplayManager:
                 state = await self.state_manager.read_state()
 
             if not self._runner_modes and not state.runners:
-                table.add_row("[dim]No runners active[/dim]", "", "", "", "", "", "")
+                table.add_row("", "[dim]No runners active[/dim]", "", "", "", "", "")
                 return
 
             shown: set[str] = set()
             self._add_configured_runners(table, state, shown)
             self._add_extra_runners(table, state, shown)
         except Exception as e:
-            table.add_row(f"[red]Error: {e}[/red]", "", "", "", "", "", "")
+            table.add_row("", "[red]Error[/red]", "", "", "", "", f"[red]{e}[/red]")
 
     def _check_keypress(self, fd: int) -> str | None:
         """Non-blocking check for a single keypress. Returns the char or None."""
