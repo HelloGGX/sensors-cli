@@ -87,6 +87,8 @@ jobs:
 
             GITHUB ISSUE MANAGEMENT:
 
+            !! This will only work if GH Issues are activated for this repository. As soon as it turns out they are not, just skip this step and mention at the end of your report that you couldn't create any issues because of that.
+
             After writing the report, manage GitHub issues for actionable findings using the `gh` CLI.
 
             1. Ensure the tracking label exists (safe to re-run):
