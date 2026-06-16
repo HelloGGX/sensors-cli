@@ -1,13 +1,12 @@
 """State manager for persisting sensors state to disk."""
 
+import asyncio
 import json
 import os
 import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-
-import aiofiles
 
 from sensors.time_util import to_utc_iso, utc_now
 
@@ -49,6 +48,15 @@ def _hydrate_query_log(entries: list) -> None:
     for entry in entries:
         if "timestamp" in entry:
             entry["timestamp"] = _parse_dt(entry["timestamp"])
+
+
+def _append_line(path: Path, line: str) -> None:
+    with open(path, "a") as f:
+        f.write(line)
+
+
+def _write_to_fd(fd: int, content: str) -> None:
+    os.write(fd, content.encode())
 
 
 def _hydrate_snapshot(snapshot_data: dict | None) -> None:
@@ -96,8 +104,7 @@ class StateManager:
             )
 
         try:
-            async with aiofiles.open(self.state_file) as f:
-                content = await f.read()
+            content = await asyncio.to_thread(self.state_file.read_text)
             data = json.loads(content)
 
             if "lastUpdated" in data:
@@ -240,8 +247,7 @@ class StateManager:
         else:
             record.pop("snapshot_id", None)
         line = json.dumps(record, separators=(",", ":")) + "\n"
-        async with aiofiles.open(self.history_file, "a") as f:
-            await f.write(line)
+        await asyncio.to_thread(_append_line, self.history_file, line)
 
     async def _write_state_atomic(self, state: StateEntry) -> None:
         """Write state to disk atomically using tempfile + os.replace().
@@ -284,9 +290,8 @@ class StateManager:
         )
 
         try:
-            # Write content to temp file using aiofiles
-            async with aiofiles.open(temp_path, "w") as f:
-                await f.write(json_content)
+            # Write content to temp file
+            await asyncio.to_thread(_write_to_fd, temp_fd, json_content)
 
             # Ensure data is flushed to disk
             os.fsync(temp_fd)
