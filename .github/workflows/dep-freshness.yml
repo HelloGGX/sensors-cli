@@ -125,10 +125,21 @@ jobs:
             |---------|--------|----------------|-----------------------------------------------------------------------------------------|
             | ...     | ...    | ...            | Created: [number](issue-url) / Already exists: [number](issue-url) / None (and why not) |
 
+      - name: Upload report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dep-freshness-report-${{ github.run_id }}-${{ steps.freshness.outputs.short }}
+          path: |
+            ${{ steps.freshness.outputs.report_path }}
+            ${{ steps.freshness.outputs.raw_path }}
 
       - name: Commit freshness report
         if: ${{ inputs.commit == '' && github.ref_type == 'branch' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          gh auth setup-git
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -145,10 +156,4 @@ jobs:
       - name: Publish report to job summary
         run: cat "${{ steps.freshness.outputs.report_path }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload report as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: dep-freshness-report-${{ github.run_id }}-${{ steps.freshness.outputs.short }}
-          path: |
-            ${{ steps.freshness.outputs.report_path }}
-            ${{ steps.freshness.outputs.raw_path }}
+      
