@@ -1,5 +1,7 @@
 # Sensors Sidecar CLI
 
+[English](README.md) | [中文](README-zh.md)
+
 An **experimental** little "sidecar" system that can run a bunch of code quality sensors next to a coding agent. It can run linting, tests, and other checks on a schedule or in watch mode, persists structured state under `.sensors/` in the target codebase, and exposes a **`sensors`** CLI for running the service, checking the sensor status, or displaying the status in a human readable format.
 
 Companion repository to this article: [Maintainability sensors for coding agents]
