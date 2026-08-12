@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.spec
 
 # Virtual environments
 .venv/
@@ -46,3 +47,4 @@ state/*.json
 # OS
 .DS_Store
 Thumbs.db
+.pypirc

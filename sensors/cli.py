@@ -406,7 +406,12 @@ def _wait_for_control_file(control_path: Path, timeout_sec: float = 5.0) -> bool
 
 
 def _spawn_background_worker(working_dir: str, config: str | None) -> None:
-    cmd = [sys.executable, "-m", "sensors.cli", "start", "--worker", str(Path(working_dir).resolve())]
+    # PyInstaller 打包后 sys.executable 是可执行文件本身(而非 python),
+    # 直接重新调用即可;开发模式下仍走 `python -m sensors.cli`。
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "start", "--worker", str(Path(working_dir).resolve())]
+    else:
+        cmd = [sys.executable, "-m", "sensors.cli", "start", "--worker", str(Path(working_dir).resolve())]
     if config:
         cmd.extend(["--config", config])
     subprocess.Popen(  # noqa: S603 -- args are sys.executable + literals + user-provided working_dir; validated by caller

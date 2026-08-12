@@ -29,6 +29,7 @@ dev = [
     "mypy>=1.0.0",
     "ruff>=0.4.0",
     "import-linter>=2.5.2",
+    "pyinstaller>=6.22.0",
 ]
 
 [tool.uv]
