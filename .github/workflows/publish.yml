@@ -44,3 +44,7 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # 关闭 sigstore attestations:rekor 透明日志服务偶有 502 故障,
+          # 且对内部工具非必需。如需供应链签名证明,改为 true 即可。
+          attestations: false
