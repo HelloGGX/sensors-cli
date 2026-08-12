@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 include = ["sensors*"]
 
 [project]
-name = "sensors"
+name = "sensors-cli"
 version = "0.1.0"
 description = "Continuous code quality monitoring sensors for coding agents"
 readme = "README.md"
