@@ -441,11 +441,9 @@ async def test_keypress_s_triggers_snapshot_in_run_loop():
     sm = StateManager()
 
     with (
-        patch("sensors.tui.display.tty"),
-        patch("sensors.tui.display.termios"),
         patch("sensors.tui.display.sys"),
-        patch("sensors.tui.display.os.read", return_value=b"s"),
-        patch("sensors.tui.display.select.select", return_value=([True], [], [])),
+        patch("sensors.tui.display._raw_tty"),
+        patch("sensors.tui.display._check_keypress", return_value="s"),
     ):
         sm.read_state = AsyncMock(return_value=AsyncMock(runners={}, snapshot=None, queryLog=[]))
         display = DisplayManager(sm, events=events, update_interval=0.01)

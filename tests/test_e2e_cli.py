@@ -1,4 +1,4 @@
-"""End-to-end subprocess tests for sensors CLI (Unix control socket)."""
+"""End-to-end subprocess tests for sensors CLI (Unix socket on POSIX, TCP on Windows)."""
 
 from __future__ import annotations
 
@@ -13,12 +13,17 @@ from pathlib import Path
 
 import pytest
 
-from sensors.config.loader import control_path_for_config, resolve_config_path
-from sensors.orchestration.control_server import control_state, rpc_unix_sync
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Sensors control plane uses Unix domain sockets only",
+from sensors.config.loader import (
+    control_path_for_config,
+    resolve_config_path,
+    socket_path_for_config,
+)
+from sensors.orchestration.control_server import (
+    _endpoint_from_state,
+    _pid_alive,
+    control_state,
+    rpc_sync,
+    stop_running_sensors,
 )
 
 
@@ -61,16 +66,14 @@ def _wait_pid_exit(pid: int, timeout: float = 5.0) -> None:
     """Block until *pid* is no longer running (best-effort, no error on timeout)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _pid_alive(pid):
             return
         time.sleep(0.1)
 
 
 def _kill_pid(pid: int) -> None:
-    """SIGTERM + wait for a single PID."""
-    with contextlib.suppress(ProcessLookupError, PermissionError):
+    """Stop signal + wait for a single PID (cross-platform)."""
+    with contextlib.suppress(OSError):
         os.kill(pid, signal.SIGTERM)
     _wait_pid_exit(pid)
 
@@ -93,9 +96,24 @@ def project_dir():
         project.mkdir()
         _write_minimal_project(project)
         yield project
-        # Kill any sensors workers for this temp dir, even if control files are gone.
+        # Stop any sensors workers for this temp dir, even if control files are gone.
+        try:
+            cfg_path = resolve_config_path(str(project), None)
+            stop_running_sensors(control_path_for_config(cfg_path), socket_path_for_config(cfg_path))
+        except Exception:
+            pass
         for pid in _find_sensors_pids_for_dir(project):
             _kill_pid(pid)
+        # Windows: runner grandchildren orphaned by a forceful worker kill can
+        # hold the project dir as their CWD briefly; retry deletion until free.
+        import shutil
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            shutil.rmtree(project.parent, ignore_errors=True)
+            if not project.parent.exists():
+                break
+            time.sleep(0.1)
 
 
 def test_run_background_writes_control_and_state(project_dir: Path) -> None:
@@ -114,22 +132,14 @@ def test_run_background_writes_control_and_state(project_dir: Path) -> None:
     data = control_state(ctl)
     assert data is not None
     assert "socketPath" in data and "pid" in data
-    sock = Path(data["socketPath"])
-    assert sock.exists()
+    sock, port = _endpoint_from_state(data)
+    assert port is not None or sock.exists()  # POSIX: socket file; Windows: TCP port
 
     # Runner should eventually populate state
     state_file = cfg_path.parent / "e2e.state.json"
     _wait_until(lambda: state_file.exists() and state_file.stat().st_size > 10)
 
-    pid = int(data["pid"])
-    with contextlib.suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGTERM)
-    for _ in range(40):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.1)
+    _kill_pid(int(data["pid"]))
 
 
 def test_rpc_snapshot_persists_snapshot_block(project_dir: Path) -> None:
@@ -146,9 +156,9 @@ def test_rpc_snapshot_persists_snapshot_block(project_dir: Path) -> None:
     _wait_until(lambda: ctl.exists() and control_state(ctl) is not None)
     data = control_state(ctl)
     assert data is not None
-    sock = Path(data["socketPath"])
+    sock, port = _endpoint_from_state(data)
 
-    res = rpc_unix_sync(sock, "snapshot", timeout=5.0)
+    res = rpc_sync(sock, "snapshot", port=port, timeout=5.0)
     assert res.get("ok") is True
 
     state_file = cfg_path.parent / "e2e.state.json"
@@ -158,9 +168,7 @@ def test_rpc_snapshot_persists_snapshot_block(project_dir: Path) -> None:
         and b'"timestamp"' in state_file.read_bytes()
     )
 
-    pid = int(data["pid"])
-    with contextlib.suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGTERM)
+    _kill_pid(int(data["pid"]))
 
 
 def test_second_run_fails_when_sensors_running(project_dir: Path) -> None:
@@ -189,8 +197,7 @@ def test_second_run_fails_when_sensors_running(project_dir: Path) -> None:
 
     data = control_state(ctl)
     if data and "pid" in data:
-        with contextlib.suppress(ProcessLookupError):
-            os.kill(int(data["pid"]), signal.SIGTERM)
+        _kill_pid(int(data["pid"]))
 
 
 def test_snapshot_cli_after_background_run(project_dir: Path) -> None:
@@ -216,8 +223,7 @@ def test_snapshot_cli_after_background_run(project_dir: Path) -> None:
 
     data = control_state(ctl)
     if data and "pid" in data:
-        with contextlib.suppress(ProcessLookupError):
-            os.kill(int(data["pid"]), signal.SIGTERM)
+        _kill_pid(int(data["pid"]))
 
 
 def test_snapshot_cli_fails_without_running_sensors(project_dir: Path) -> None:
@@ -256,6 +262,7 @@ def test_status_requires_project_or_all() -> None:
     assert "required" in out.lower() or "--all" in out
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="`sensors status --all` is not supported on Windows")
 def test_status_all_smoke() -> None:
     st = subprocess.run(
         _sensors_cli() + ["status", "--all"],
@@ -315,6 +322,7 @@ def test_status_running_after_background_run(project_dir: Path) -> None:
     _wait_until(lambda: not ctl.exists(), timeout=10.0)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="`sensors status --all` is not supported on Windows")
 def test_status_all_lists_background_worker(project_dir: Path) -> None:
     cp = subprocess.run(
         _sensors_cli() + ["start", str(project_dir)],
@@ -372,7 +380,7 @@ def _write_on_check_project(project: Path) -> None:
                 "runners:",
                 "  - name: versions",
                 "    mode: on_check",
-                "    command: printf 'node 20.0.0\\npython 3.12\\n'",
+                f"    command: {sys.executable.replace(chr(92), chr(92) * 2)} -c \"print('node 20.0.0'); print('python 3.12')\"",
                 "",
             ]
         ),
@@ -456,8 +464,7 @@ def test_stop_after_background_run(project_dir: Path) -> None:
     assert "stopped" in sp.stdout.lower()
 
     _wait_until(lambda: not ctl.exists(), timeout=10.0)
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert not _pid_alive(pid)
 
 
 def test_ping_rpc(project_dir: Path) -> None:
@@ -473,8 +480,7 @@ def test_ping_rpc(project_dir: Path) -> None:
     _wait_until(lambda: ctl.exists() and control_state(ctl) is not None)
     data = control_state(ctl)
     assert data is not None
-    sock = Path(data["socketPath"])
-    res = rpc_unix_sync(sock, "ping")
+    sock, port = _endpoint_from_state(data)
+    res = rpc_sync(sock, "ping", port=port)
     assert res.get("ok") is True
-    with contextlib.suppress(ProcessLookupError):
-        os.kill(int(data["pid"]), signal.SIGTERM)
+    _kill_pid(int(data["pid"]))

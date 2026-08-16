@@ -57,7 +57,7 @@ def format_local_short(dt: datetime) -> str:
     yesterday = (now - timedelta(days=1)).date()
     if local.date() == yesterday:
         return f"yesterday {time_str}"
-    return local.strftime("%b %-d ") + time_str
+    return f"{local:%b} {local.day} " + time_str
 
 
 def format_local_datetime(dt: datetime) -> str:

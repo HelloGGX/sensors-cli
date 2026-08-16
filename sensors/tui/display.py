@@ -2,10 +2,7 @@
 
 import asyncio
 import os
-import select
 import sys
-import termios
-import tty
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -19,19 +16,43 @@ from sensors.events import DisplayEvents
 from sensors.persistence.models import RunnerEntry
 from sensors.persistence.state_manager import StateManager
 
+if os.name == "nt":
+    import msvcrt
 
-@contextmanager
-def _raw_tty(fd: int) -> Iterator[None]:
-    """Put stdin in cbreak/no-echo mode for immediate key reads; restore on exit."""
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setcbreak(fd)
-        new_settings = termios.tcgetattr(fd)
-        new_settings[3] = new_settings[3] & ~termios.ECHO
-        termios.tcsetattr(fd, termios.TCSANOW, new_settings)
+    @contextmanager
+    def _raw_tty(fd: int) -> Iterator[None]:
+        """Windows console input needs no raw-mode setup; msvcrt reads are unbuffered."""
         yield
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    def _check_keypress(fd: int) -> str | None:
+        """Non-blocking check for a single keypress. Returns the char or None."""
+        if msvcrt.kbhit():
+            return msvcrt.getwch()
+        return None
+
+else:
+    import select
+    import termios
+    import tty
+
+    @contextmanager
+    def _raw_tty(fd: int) -> Iterator[None]:
+        """Put stdin in cbreak/no-echo mode for immediate key reads; restore on exit."""
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            new_settings = termios.tcgetattr(fd)
+            new_settings[3] = new_settings[3] & ~termios.ECHO
+            termios.tcsetattr(fd, termios.TCSANOW, new_settings)
+            yield
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    def _check_keypress(fd: int) -> str | None:
+        """Non-blocking check for a single keypress. Returns the char or None."""
+        if select.select([sys.stdin], [], [], 0)[0]:
+            return os.read(fd, 1).decode("utf-8", errors="ignore")
+        return None
 
 
 class DisplayManager:
@@ -347,12 +368,6 @@ class DisplayManager:
         except Exception as e:
             table.add_row("", "[red]Error[/red]", "", "", "", "", f"[red]{e}[/red]")
 
-    def _check_keypress(self, fd: int) -> str | None:
-        """Non-blocking check for a single keypress. Returns the char or None."""
-        if select.select([sys.stdin], [], [], 0)[0]:
-            return os.read(fd, 1).decode("utf-8", errors="ignore")
-        return None
-
     def _trigger_rerun_if_digit(self, ch: str | None) -> None:
         """If ``ch`` is 1–9, signal the corresponding runner's re-run event (if any)."""
         if not ch or ch not in "123456789":
@@ -435,7 +450,7 @@ class DisplayManager:
         with _raw_tty(fd), Live(self._create_table(), console=self.console, refresh_per_second=1) as live:
             while not self._should_stop:
                 try:
-                    ch = self._check_keypress(fd)
+                    ch = _check_keypress(fd)
                     if ch:
                         await self._handle_key(ch)
                 except OSError:

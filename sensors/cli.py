@@ -27,10 +27,11 @@ from sensors.config.loader import (
 from sensors.config.schema import RunnerConfig, SensorsConfig
 from sensors.events import DisplayEvents
 from sensors.orchestration.control_server import (
+    _endpoint_from_state,
     control_state,
     is_sensors_running,
-    rpc_unix,
-    rpc_unix_sync,
+    rpc,
+    rpc_sync,
     stop_running_sensors,
 )
 from sensors.orchestration.orchestrator import run_sensors
@@ -144,8 +145,8 @@ def _require_running_sensors(
     config: str | None,
     *,
     not_running_message: str,
-) -> tuple[Path, Path, dict]:
-    """Resolve config, verify sensors running; return (cfg_path, socket_path, control_data)."""
+) -> tuple[Path, Path | None, int | None, dict]:
+    """Resolve config, verify sensors running; return (cfg_path, socket_path, port, control_data)."""
     try:
         cfg_path = resolve_config_path(wd, config)
     except ConfigLoadError as e:
@@ -159,15 +160,20 @@ def _require_running_sensors(
         raise typer.Exit(2)
 
     data = control_state(ctl)
-    if not data or "socketPath" not in data:
+    if not data:
+        typer.echo("Invalid control file.", err=True)
+        raise typer.Exit(2)
+    sock_ep, port = _endpoint_from_state(data)
+    if sock_ep is None and port is None:
         typer.echo("Invalid control file.", err=True)
         raise typer.Exit(2)
 
-    return cfg_path, Path(data["socketPath"]), data
+    return cfg_path, sock_ep, port, data
 
 
 def _make_attach_callbacks(
-    socket_path: Path,
+    socket_path: Path | None,
+    port: int | None,
     display_box: list[DisplayManager | None],
 ) -> tuple[
     Callable[[], Awaitable[None]],
@@ -176,7 +182,7 @@ def _make_attach_callbacks(
     Callable[[], Awaitable[None]],
 ]:
     async def on_snapshot() -> None:
-        res = await rpc_unix(socket_path, "snapshot")
+        res = await rpc(socket_path, "snapshot", port=port)
         d = display_box[0]
         if d is None:
             return
@@ -187,7 +193,7 @@ def _make_attach_callbacks(
             d._snapshot_status = f"SnapshotEntry failed: {res.get('error', res)}"
 
     async def on_clear() -> None:
-        res = await rpc_unix(socket_path, "clear")
+        res = await rpc(socket_path, "clear", port=port)
         d = display_box[0]
         if d is not None:
             if res.get("ok"):
@@ -196,13 +202,13 @@ def _make_attach_callbacks(
                 d._clear_status = f"Clear failed: {res.get('error', res)}"
 
     async def on_rerun(runner_name: str) -> None:
-        res = await rpc_unix(socket_path, "rerun", params={"name": runner_name})
+        res = await rpc(socket_path, "rerun", port=port, params={"name": runner_name})
         d = display_box[0]
         if d is not None and res.get("ok"):
             d._triggered_run_started_at[runner_name] = datetime.now()
 
     async def on_shutdown() -> None:
-        await rpc_unix(socket_path, "shutdown")
+        await rpc(socket_path, "shutdown", port=port)
 
     return on_snapshot, on_clear, on_rerun, on_shutdown
 
@@ -501,7 +507,7 @@ def show_command(
 ) -> None:
     """Attach to a running sensors and show the overview (read-only viewer; Q does not stop the server)."""
     wd = str(Path(working_dir).resolve())
-    _cfg_path, socket_path, _data = _require_running_sensors(
+    _cfg_path, socket_path, port, _data = _require_running_sensors(
         wd, config, not_running_message=_NOT_RUNNING_SHOW
     )
 
@@ -513,7 +519,9 @@ def show_command(
 
     sm = _get_state_manager(wd, config)
     display_box: list[DisplayManager | None] = [None]
-    on_snapshot, on_clear, on_rerun, on_shutdown = _make_attach_callbacks(socket_path, display_box)
+    on_snapshot, on_clear, on_rerun, on_shutdown = _make_attach_callbacks(
+        socket_path, port, display_box
+    )
 
     events = DisplayEvents()
     display = DisplayManager(
@@ -539,11 +547,11 @@ def snapshot_command(
 ) -> None:
     """Tell the running sensors to save a score snapshot (same as pressing S in the TUI)."""
     wd = str(Path(working_dir).resolve())
-    _cfg_path, socket_path, _data = _require_running_sensors(
+    _cfg_path, socket_path, port, _data = _require_running_sensors(
         wd, config, not_running_message=_NOT_RUNNING_SNAPSHOT
     )
 
-    res = rpc_unix_sync(socket_path, "snapshot", timeout=10.0)
+    res = rpc_sync(socket_path, "snapshot", port=port, timeout=10.0)
     if res.get("ok"):
         typer.echo("SnapshotEntry saved.")
         raise typer.Exit(0)
@@ -678,11 +686,12 @@ async def _run_on_check_command(runner_cfg: RunnerConfig) -> str:
 
 
 def _stop_by_pid(pid: int, wait: bool, timeout_sec: float) -> None:
-    """Send SIGTERM to a sensors process by PID after verifying it is one."""
+    """Stop a sensors process by PID after verifying it is one."""
     import contextlib
     import os
     import signal
 
+    from sensors.orchestration.control_server import _pid_alive
     from sensors.orchestration.sensors_processes import list_sensors_start_pids
 
     known_pids = list_sensors_start_pids()
@@ -694,41 +703,36 @@ def _stop_by_pid(pid: int, wait: bool, timeout_sec: float) -> None:
         )
         raise typer.Exit(1)
 
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+    if not _pid_alive(pid):
         typer.echo(f"No process with pid {pid}.", err=True)
-        raise typer.Exit(1) from None
-    except PermissionError:
-        typer.echo(f"Permission denied for pid {pid}.", err=True)
-        raise typer.Exit(1) from None
+        raise typer.Exit(1)
 
-    os.kill(pid, signal.SIGTERM)
+    # POSIX: SIGTERM triggers the worker's graceful shutdown handler.
+    # Windows: os.kill maps to TerminateProcess (forceful, no handler runs).
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGTERM)
     if not wait:
-        typer.echo(f"Sent SIGTERM to pid {pid}.")
+        typer.echo(f"Sent stop signal to pid {pid}.")
         raise typer.Exit(0)
 
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _pid_alive(pid):
             typer.echo(f"Stopped sensors (pid {pid}).")
-            raise typer.Exit(0) from None
+            raise typer.Exit(0)
         time.sleep(0.1)
 
-    # SIGTERM didn't work (e.g. stuck I/O in orphaned worker) -- escalate to SIGKILL.
-    typer.echo(f"PID {pid} did not exit after SIGTERM; sending SIGKILL.", err=True)
-    with contextlib.suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGKILL)
+    # Signal didn't work (e.g. stuck I/O in orphaned worker) -- escalate to SIGKILL.
+    typer.echo(f"PID {pid} did not exit after stop signal; escalating.", err=True)
+    if os.name != "nt":
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
     for _ in range(20):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _pid_alive(pid):
             typer.echo(f"Killed sensors (pid {pid}).")
-            raise typer.Exit(0) from None
+            raise typer.Exit(0)
         time.sleep(0.1)
-    typer.echo(f"PID {pid} did not exit even after SIGKILL.", err=True)
+    typer.echo(f"PID {pid} did not exit.", err=True)
     raise typer.Exit(1)
 
 

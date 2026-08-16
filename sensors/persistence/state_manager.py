@@ -296,12 +296,17 @@ class StateManager:
             # Ensure data is flushed to disk
             os.fsync(temp_fd)
 
+            # Close before replacing: Windows cannot rename a file with an open handle
+            os.close(temp_fd)
+            temp_fd = -1
+
             # Atomically replace the old file with the new one
             os.replace(temp_path, self.state_file)
 
         finally:
-            # Close the file descriptor
-            os.close(temp_fd)
+            # Close the file descriptor if not already closed
+            if temp_fd >= 0:
+                os.close(temp_fd)
             # Clean up temp file if it still exists (e.g., if os.replace failed)
             if os.path.exists(temp_path):
                 os.unlink(temp_path)

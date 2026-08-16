@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -23,6 +24,7 @@ from sensors.config.loader import (
 from sensors.config.schema import RunnerConfig, RunnerMode, SensorsConfig
 from sensors.events import DisplayEvents
 from sensors.orchestration.control_server import (
+    _pid_alive,
     control_state,
     ensure_no_live_sensors,
     remove_control_artifacts,
@@ -177,11 +179,8 @@ def _cleanup_stale_control(control_path: Path, socket_path: Path) -> None:
     if not data:
         return
     pid = data.get("pid")
-    if isinstance(pid, int):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            remove_control_artifacts(control_path, socket_path)
+    if isinstance(pid, int) and not _pid_alive(pid):
+        remove_control_artifacts(control_path, socket_path)
 
 
 async def _setup_orchestrator(
@@ -203,15 +202,23 @@ async def _setup_orchestrator(
     state_manager = StateManager(state_file)
     events = DisplayEvents()
 
-    def signal_handler() -> None:
+    def signal_handler(*_args: object) -> None:
+        """Accepts no args (loop handler) or (signum, frame) (signal.signal on Windows)."""
         events.shutdown.set()
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, signal_handler)
+        try:
+            loop.add_signal_handler(sig, signal_handler)
+        except (NotImplementedError, RuntimeError, ValueError):
+            # Windows: loop signal handlers are unsupported; fall back to signal.signal
+            with contextlib.suppress(OSError, ValueError):
+                signal.signal(sig, signal_handler)
 
-    control_server = await start_control_server(sock_path, events)
-    write_control_file(ctl_path, sock_path, os.getpid(), config_path.name, working_dir=working_dir)
+    control_server, port = await start_control_server(sock_path, events)
+    write_control_file(
+        ctl_path, sock_path, os.getpid(), config_path.name, working_dir=working_dir, port=port
+    )
 
     return OrchestratorContext(
         working_dir=working_dir,

@@ -1,4 +1,10 @@
-"""Unix domain socket control plane for the running sensors (RPC to asyncio events)."""
+"""Control plane for the running sensors (RPC to asyncio events).
+
+POSIX: Unix domain socket at ``.sensors/<config>.sock``.
+Windows: asyncio has no Unix socket support, so a TCP server bound to
+127.0.0.1 on an ephemeral port is used instead; the port is recorded in
+the control file alongside the planned socket path.
+"""
 
 from __future__ import annotations
 
@@ -56,12 +62,14 @@ async def handle_control_connection(
         await writer.wait_closed()
 
 
-def write_control_file(
+def write_control_file(  # noqa: PLR0913 -- endpoint metadata (path + port) is simplest as flat args
     control_path: Path,
     socket_path: Path,
     pid: int,
     config_file_name: str,
     working_dir: str | None = None,
+    *,
+    port: int | None = None,
 ) -> None:
     """Write metadata so clients can find the listener."""
     control_path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,6 +80,8 @@ def write_control_file(
     }
     if working_dir is not None:
         payload["workingDir"] = working_dir
+    if port is not None:
+        payload["port"] = port
     control_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
@@ -90,6 +100,30 @@ def remove_control_artifacts(control_path: Path, socket_path: Path) -> None:
 
 
 def _pid_alive(pid: int) -> bool:
+    """True if a process with this PID exists.
+
+    Windows note: ``os.kill(pid, 0)`` maps to TerminateProcess there and would
+    actually kill the process, so use the Win32 API instead.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            # ERROR_ACCESS_DENIED (5): process exists but is off-limits -> alive
+            return ctypes.get_last_error() == 5
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -109,16 +143,35 @@ def control_state(control_path: Path) -> dict[str, Any] | None:
         return None
 
 
-async def rpc_unix(
-    socket_path: Path,
+def _endpoint_from_state(data: dict[str, Any]) -> tuple[Path | None, int | None]:
+    """Extract the RPC endpoint from control state: (unix path, tcp port)."""
+    port = data.get("port")
+    if isinstance(port, int) and 0 < port < 65536:
+        return None, port
+    sock = data.get("socketPath")
+    return (Path(sock) if isinstance(sock, str) else None), None
+
+
+async def rpc(
+    socket_path: Path | None,
     method: str,
     *,
+    port: int | None = None,
     params: dict[str, Any] | None = None,
     timeout: float = 5.0,
 ) -> dict[str, Any]:
-    """Send one JSON-line request and read one JSON-line response."""
-    path = str(socket_path.resolve())
-    reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(path), timeout=timeout)
+    """Send one JSON-line request and read one JSON-line response.
+
+    Connects via TCP when ``port`` is given (Windows transport), else via the
+    Unix domain socket at ``socket_path``.
+    """
+    if port is not None:
+        connect = asyncio.open_connection("127.0.0.1", port)
+    else:
+        if socket_path is None:
+            return {"ok": False, "error": "no control endpoint"}
+        connect = asyncio.open_unix_connection(str(Path(socket_path).resolve()))
+    reader, writer = await asyncio.wait_for(connect, timeout=timeout)
     payload = {"method": method, **(params or {})}
     try:
         writer.write((json.dumps(payload) + "\n").encode())
@@ -132,27 +185,41 @@ async def rpc_unix(
         await writer.wait_closed()
 
 
-def rpc_unix_sync(socket_path: Path, method: str, *, timeout: float = 5.0) -> dict[str, Any]:
+def rpc_sync(
+    socket_path: Path | None,
+    method: str,
+    *,
+    port: int | None = None,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
     """Synchronous wrapper for CLI code."""
-    return asyncio.run(rpc_unix(socket_path, method, timeout=timeout))
+    return asyncio.run(rpc(socket_path, method, port=port, timeout=timeout))
 
 
 async def start_control_server(
     socket_path: Path,
     events: DisplayEvents,
-) -> asyncio.AbstractServer:
-    """Bind Unix socket and listen for RPC connections."""
-    socket_path = Path(socket_path).resolve()
-    socket_path.parent.mkdir(parents=True, exist_ok=True)
-    if socket_path.exists():
-        socket_path.unlink()
+) -> tuple[asyncio.AbstractServer, int | None]:
+    """Listen for RPC connections.
 
+    Returns ``(server, port)`` where ``port`` is the bound TCP port on Windows
+    and ``None`` on POSIX (Unix socket at ``socket_path``).
+    """
     async def _client_cb(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         await handle_control_connection(reader, writer, events)
 
-    return await asyncio.start_unix_server(_client_cb, path=str(socket_path))
+    if os.name == "nt":
+        server = await asyncio.start_server(_client_cb, host="127.0.0.1", port=0)
+        return server, server.sockets[0].getsockname()[1]
+
+    socket_path = Path(socket_path).resolve()
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    if socket_path.exists():
+        socket_path.unlink()
+    server = await asyncio.start_unix_server(_client_cb, path=str(socket_path))
+    return server, None
 
 
 async def ensure_no_live_sensors(control_path: Path, socket_path: Path) -> None:
@@ -161,21 +228,19 @@ async def ensure_no_live_sensors(control_path: Path, socket_path: Path) -> None:
     if not data:
         return
     pid = data.get("pid")
-    sock = data.get("socketPath")
-    if isinstance(pid, int) and _pid_alive(pid) and sock:
-        sp = Path(sock)
-        if sp.exists():
-            try:
-                res = await rpc_unix(sp, "ping", timeout=2.0)
-                if res.get("ok"):
-                    raise RuntimeError(
-                        "A sensors instance is already running for this project. "
-                    )
-            except RuntimeError:
-                raise
-            except (OSError, TimeoutError, json.JSONDecodeError, ConnectionError):
-                # Stale: ping failed — allow start
-                pass
+    sock, port = _endpoint_from_state(data)
+    if isinstance(pid, int) and _pid_alive(pid) and (port is not None or (sock and sock.exists())):
+        try:
+            res = await rpc(sock, "ping", port=port, timeout=2.0)
+            if res.get("ok"):
+                raise RuntimeError(
+                    "A sensors instance is already running for this project. "
+                )
+        except RuntimeError:
+            raise
+        except (OSError, TimeoutError, json.JSONDecodeError, ConnectionError):
+            # Stale: ping failed — allow start
+            pass
 
 
 def ensure_no_live_sensors_sync(control_path: Path, socket_path: Path) -> None:
@@ -184,20 +249,18 @@ def ensure_no_live_sensors_sync(control_path: Path, socket_path: Path) -> None:
     if not data:
         return
     pid = data.get("pid")
-    sock = data.get("socketPath")
-    if isinstance(pid, int) and _pid_alive(pid) and sock:
-        sp = Path(sock)
-        if sp.exists():
-            try:
-                res = rpc_unix_sync(sp, "ping", timeout=2.0)
-                if res.get("ok"):
-                    raise RuntimeError(
-                        "A sensors instance is already running for this project. "
-                    )
-            except RuntimeError:
-                raise
-            except (OSError, TimeoutError, json.JSONDecodeError, ConnectionError):
-                pass
+    sock, port = _endpoint_from_state(data)
+    if isinstance(pid, int) and _pid_alive(pid) and (port is not None or (sock and sock.exists())):
+        try:
+            res = rpc_sync(sock, "ping", port=port, timeout=2.0)
+            if res.get("ok"):
+                raise RuntimeError(
+                    "A sensors instance is already running for this project. "
+                )
+        except RuntimeError:
+            raise
+        except (OSError, TimeoutError, json.JSONDecodeError, ConnectionError):
+            pass
 
 
 def is_sensors_running(control_path: Path, socket_path: Path) -> bool:
@@ -206,19 +269,30 @@ def is_sensors_running(control_path: Path, socket_path: Path) -> bool:
     if not data:
         return False
     pid = data.get("pid")
-    sock = data.get("socketPath")
-    if not isinstance(pid, int) or not sock:
+    if not isinstance(pid, int):
         return False
     if not _pid_alive(pid):
         return False
-    sp = Path(sock)
-    if not sp.exists():
+    sock, port = _endpoint_from_state(data)
+    if port is None and (sock is None or not sock.exists()):
         return False
     try:
-        res = rpc_unix_sync(sp, "ping", timeout=2.0)
+        res = rpc_sync(sock, "ping", port=port, timeout=2.0)
         return bool(res.get("ok"))
     except (OSError, TimeoutError, json.JSONDecodeError):
         return False
+
+
+def _request_graceful_shutdown(data: dict[str, Any]) -> bool:
+    """Ask the worker to shut itself down via its control channel. True on ack."""
+    sock, port = _endpoint_from_state(data)
+    if port is None and (sock is None or not sock.exists()):
+        return False
+    try:
+        res = rpc_sync(sock, "shutdown", port=port, timeout=2.0)
+    except (OSError, TimeoutError, json.JSONDecodeError, ConnectionError):
+        return False
+    return bool(res.get("ok"))
 
 
 def stop_running_sensors(
@@ -228,9 +302,11 @@ def stop_running_sensors(
     wait: bool = True,
     timeout_sec: float = 15.0,
 ) -> tuple[str, int]:
-    """Send SIGTERM to the PID in control.json (same as interactive Ctrl+C).
+    """Stop the sensors that owns control.json.
 
-    Removes stale control/socket files if the process is already gone.
+    Prefers the graceful RPC ``shutdown`` (lets the worker clean up); falls back
+    to SIGTERM on POSIX and TerminateProcess via os.kill on Windows. Removes
+    stale control/socket files if the process is already gone.
     Returns (message, exit_code) where exit_code is 0 on success or idempotent no-op,
     and 1 if the process was signalled but did not exit within timeout_sec (when wait=True).
     """
@@ -239,25 +315,27 @@ def stop_running_sensors(
         return ("No sensors is running.", 0)
 
     pid = data.get("pid")
-    sock_from_file = data.get("socketPath")
-    sp = Path(sock_from_file) if isinstance(sock_from_file, str) else socket_path
+    sock, _port = _endpoint_from_state(data)
+    if sock is None:
+        sock = socket_path
 
     if not isinstance(pid, int):
         remove_control_artifacts(control_path, socket_path)
         return ("Removed invalid control file.", 0)
 
     if not _pid_alive(pid):
-        remove_control_artifacts(control_path, sp)
+        remove_control_artifacts(control_path, sock)
         return (f"Removed stale control metadata (PID {pid} was not running).", 0)
 
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        remove_control_artifacts(control_path, sp)
-        return (f"Process {pid} already exited; cleaned up metadata.", 0)
+    if not _request_graceful_shutdown(data):
+        try:
+            os.kill(pid, signal.SIGTERM)  # POSIX: graceful; Windows: forceful
+        except (ProcessLookupError, PermissionError, OSError):
+            remove_control_artifacts(control_path, sock)
+            return (f"Process {pid} already exited; cleaned up metadata.", 0)
 
     if not wait:
-        return (f"Sent SIGTERM to sensors (PID {pid}).", 0)
+        return (f"Stop requested for sensors (PID {pid}).", 0)
 
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
@@ -265,8 +343,9 @@ def stop_running_sensors(
             return ("Sensors stopped.", 0)
         time.sleep(0.1)
 
+    hint = f"kill -KILL {pid}" if os.name != "nt" else f"taskkill /F /PID {pid}"
     return (
-        f"Sensors (PID {pid}) did not exit within {timeout_sec:.0f}s after SIGTERM. "
-        f"Try: kill -KILL {pid}",
+        f"Sensors (PID {pid}) did not exit within {timeout_sec:.0f}s after stop request. "
+        f"Try: {hint}",
         1,
     )
