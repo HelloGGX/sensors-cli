@@ -126,15 +126,18 @@ def test_parse_non_array_json():
 
 @pytest.mark.asyncio
 async def test_integration_stylelint_full_pipeline(tmp_path):
-    if shutil.which("npx") is None:
+    npx = shutil.which("npx")
+    if npx is None:
         pytest.skip("npx not available")
     rc = tmp_path / ".stylelintrc.json"
     rc.write_text(json.dumps({"rules": {"color-hex-length": "short"}}), encoding="utf-8")
     css = tmp_path / "bad.css"
     css.write_text(".x { color: #ffffff; }\n", encoding="utf-8")
     env = {**os.environ, "NO_COLOR": "1", "FORCE_COLOR": "0"}
+    # Use the resolved path: on Windows npx is npx.cmd and bare "npx" fails
+    # with WinError 2 because CreateProcess does not apply PATHEXT.
     proc = await asyncio.create_subprocess_exec(
-        "npx",
+        npx,
         "--yes",
         "stylelint",
         "--formatter",
