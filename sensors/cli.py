@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import sys
 import time
@@ -420,14 +421,30 @@ def _spawn_background_worker(working_dir: str, config: str | None) -> None:
         cmd = [sys.executable, "-m", "sensors.cli", "start", "--worker", str(Path(working_dir).resolve())]
     if config:
         cmd.extend(["--config", config])
-    subprocess.Popen(  # noqa: S603 -- args are sys.executable + literals + user-provided working_dir; validated by caller
-        cmd,
-        cwd=str(Path(working_dir).resolve()),
-        start_new_session=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    cwd = str(Path(working_dir).resolve())
+    if os.name == "nt":
+        # start_new_session 在 Windows 上被静默忽略;用 creationflags 真正脱离
+        # 父控制台(否则关终端会连带杀掉 worker,Ctrl+C 也会传播)。
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+            subprocess, "DETACHED_PROCESS", 0
+        )
+        subprocess.Popen(  # noqa: S603 -- args are sys.executable + literals + user-provided working_dir; validated by caller
+            cmd,
+            cwd=cwd,
+            creationflags=creationflags,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        subprocess.Popen(  # noqa: S603 -- args are sys.executable + literals + user-provided working_dir; validated by caller
+            cmd,
+            cwd=cwd,
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 @app.command("start")
