@@ -74,7 +74,7 @@ max-args = 5         # threshold for PLR0913 (default is 5)
 max-statements = 50  # threshold for PLR0915 (default is 50)
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

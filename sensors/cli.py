@@ -16,6 +16,7 @@ from pathlib import Path
 
 import typer
 
+from sensors import __version__
 from sensors.config.loader import (
     ConfigLoadError,
     control_path_for_config,
@@ -824,6 +825,26 @@ def refresh_command(
     """Trigger immediate refresh (not yet implemented)."""
     print("Refresh is not yet implemented. Run the sensors to update state.", file=sys.stderr)
     sys.exit(0)
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"sensors {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _app_callback(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        help="Show the sensors version and exit.",
+        callback=_version_callback,
+        is_eager=True,
+    ),
+) -> None:
+    """Sensors: continuous code quality monitoring for coding agents."""
 
 
 def main() -> None:

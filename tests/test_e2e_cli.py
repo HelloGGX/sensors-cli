@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from sensors import __version__
 from sensors.config.loader import (
     control_path_for_config,
     resolve_config_path,
@@ -29,6 +30,17 @@ from sensors.orchestration.control_server import (
 
 def _sensors_cli() -> list[str]:
     return [sys.executable, "-m", "sensors.cli"]
+
+
+def test_sensors_cli_version() -> None:
+    st = subprocess.run(
+        _sensors_cli() + ["--version"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert st.returncode == 0
+    assert st.stdout.strip() == f"sensors {__version__}"
 
 
 def _write_minimal_project(project: Path) -> None:
