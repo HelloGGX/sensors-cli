@@ -16,6 +16,7 @@ from pathlib import Path
 
 from sensors.config import Formatted, RunnerResult, SensorReading
 from sensors.config.schema import RunnerConfig, RunnerMode
+from sensors.os_compat import NO_WINDOW
 from sensors.persistence.models import RunnerEntry
 from sensors.persistence.state_manager import StateManager
 from sensors.runners.parsers.base import OutputParser
@@ -259,6 +260,7 @@ class GenericRunner:
             stdin=asyncio.subprocess.DEVNULL,
             cwd=self.config.workingDir,
             env=env,
+            creationflags=NO_WINDOW,
         )
 
     async def _parse_watch_accumulated(self, accumulated: list[str]) -> None:
@@ -378,6 +380,7 @@ class GenericRunner:
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=self.config.workingDir,
                 env=env,
+                creationflags=NO_WINDOW,
             )
 
             timeout_sec = self.config.commandTimeout

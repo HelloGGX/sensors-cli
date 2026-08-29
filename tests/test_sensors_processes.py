@@ -47,6 +47,14 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="Sensors listing
             ["/opt/bin/sensors", "start", "--show", "/cli"],
             ("show", "/cli"),
         ),
+        (
+            [r"C:\Users\gavin\.local\bin\sensors.exe", "start", "--worker", r"G:\proj\java"],
+            ("worker", r"G:\proj\java"),
+        ),
+        (
+            [r"G:\proj\dist\sensors.EXE", "start", "--show", r"C:\cli"],
+            ("show", r"C:\cli"),
+        ),
     ],
 )
 def test_try_parse_sensors_start_matches(
@@ -66,6 +74,7 @@ def test_try_parse_sensors_start_matches(
         ["python3", "-m", "pip", "install", "x"],
         ["bash", "-c", "echo"],
         ["python3", "-m", "sensors.cli", "check", "."],
+        [r"C:\opt\mysensors.exe", "start", "--worker", r"C:\proj"],
     ],
 )
 def test_try_parse_sensors_start_rejects(tokens: list[str]) -> None:

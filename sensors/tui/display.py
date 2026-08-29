@@ -3,6 +3,7 @@
 import asyncio
 import os
 import sys
+import threading
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -17,7 +18,12 @@ from sensors.persistence.models import RunnerEntry
 from sensors.persistence.state_manager import StateManager
 
 if os.name == "nt":
+    import ctypes
     import msvcrt
+
+    def _console_attached() -> bool:
+        """True when this process owns a Windows console (msvcrt keys work)."""
+        return ctypes.windll.kernel32.GetConsoleWindow() != 0
 
     @contextmanager
     def _raw_tty(fd: int) -> Iterator[None]:
@@ -34,6 +40,10 @@ else:
     import select
     import termios
     import tty
+
+    def _console_attached() -> bool:
+        """POSIX: the select-based reader needs no console."""
+        return True
 
     @contextmanager
     def _raw_tty(fd: int) -> Iterator[None]:
@@ -90,6 +100,9 @@ class DisplayManager:
         self.console = Console()
         self._should_stop = False
         self._snapshot_status: str | None = None
+        self._shutdown_error: str | None = None
+        self._action_error: str | None = None
+        self._keys_unavailable = False
         self._events = events or DisplayEvents()
         self._clear_status: str | None = None
         self._runner_modes: dict[str, str] = {}
@@ -385,7 +398,10 @@ class DisplayManager:
     async def _handle_shutdown_key(self) -> None:
         if self._attach:
             if self._on_shutdown is not None:
-                await self._on_shutdown()
+                try:
+                    await self._on_shutdown()
+                except Exception as e:  # noqa: BLE001 -- Q must always close the viewer; daemon can be stopped separately
+                    self._shutdown_error = str(e)
             self._should_stop = True
         else:
             self._events.shutdown.set()
@@ -440,21 +456,76 @@ class DisplayManager:
             status_parts.append(f"[green]{self._snapshot_status}[/green]")
         if self._clear_status:
             status_parts.append(f"[yellow]{self._clear_status}[/yellow]")
+        if self._action_error:
+            status_parts.append(f"[red]{self._action_error}[/red]")
+        if self._keys_unavailable:
+            status_parts.append(
+                "[red]no interactive console — keys disabled; "
+                "pipe a command per line (q/w) or Ctrl+C to exit[/red]"
+            )
         return Text.from_markup("  │  ".join(status_parts))
+
+    def _maybe_start_stdin_fallback(self) -> asyncio.Queue[str] | None:
+        """Windows only: read stdin lines in a daemon thread when stdin is a pipe.
+
+        msvcrt reads the console input buffer, not stdin, so piped commands
+        (``echo q | sensors show``) are invisible to it — and when the process
+        has no console at all (agent/hook context) this is the only way any
+        key can arrive.
+        """
+        if os.name != "nt":
+            return None
+        try:
+            if sys.stdin.isatty():
+                return None
+        except (ValueError, OSError):
+            return None
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[str] = asyncio.Queue()
+
+        def _pump() -> None:
+            try:
+                for line in sys.stdin:
+                    loop.call_soon_threadsafe(queue.put_nowait, line)
+            except (ValueError, OSError):
+                pass  # stdin closed mid-run
+
+        threading.Thread(target=_pump, daemon=True, name="sensors-tui-stdin").start()
+        return queue
+
+    @staticmethod
+    def _drain_stdin_lines(queue: asyncio.Queue[str] | None) -> str | None:
+        """Return the first key char from any queued stdin line, else None."""
+        if queue is None:
+            return None
+        while not queue.empty():
+            line = queue.get_nowait().strip()
+            if line:
+                return line[:1]
+        return None
 
     async def run(self) -> None:
         """Run the live display until stopped."""
         from rich.console import Group
 
         fd = sys.stdin.fileno()
+        self._keys_unavailable = not _console_attached()
+        stdin_lines = self._maybe_start_stdin_fallback()
         with _raw_tty(fd), Live(self._create_table(), console=self.console, refresh_per_second=1) as live:
             while not self._should_stop:
                 try:
                     ch = _check_keypress(fd)
-                    if ch:
-                        await self._handle_key(ch)
+                    if ch is None:
+                        ch = self._drain_stdin_lines(stdin_lines)
                 except OSError:
-                    pass
+                    # select() on a closed/odd stdin: keep polling silently.
+                    ch = None
+                if ch:
+                    try:
+                        await self._handle_key(ch)
+                        self._action_error = None
+                    except Exception as e:  # noqa: BLE001 -- a failed action key must not kill the viewer; TimeoutError IS an OSError subclass
+                        self._action_error = f"key action failed: {e}"
 
                 state = await self.state_manager.read_state()
                 snapshot_time = self._format_time_short(state.snapshot.timestamp) if state.snapshot else None
@@ -462,6 +533,12 @@ class DisplayManager:
                 await self._populate_table(table, state)
                 live.update(Group(table, self._build_status_line()))
                 await asyncio.sleep(self.update_interval)
+        if self._shutdown_error is not None:
+            print(
+                f"Warning: sensors shutdown RPC failed ({self._shutdown_error}); viewer closed. "
+                "Use `sensors stop <project>` to stop the daemon.",
+                file=sys.stderr,
+            )
 
     def stop(self) -> None:
         """Stop the display manager."""

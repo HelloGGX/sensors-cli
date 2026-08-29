@@ -11,6 +11,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from sensors.os_compat import NO_WINDOW
+
 
 @dataclass(frozen=True)
 class SensorsProcessInfo:
@@ -230,7 +232,10 @@ def _find_sensors_start_token_index(tokens: list[str]) -> int:
             return i
         if i >= 1:
             prev = tokens[i - 1]
-            if prev == "sensors" or Path(prev).name == "sensors":
+            # The PyInstaller build is ``sensors`` on POSIX but ``sensors.exe`` on
+            # Windows; split on both separators so matching is host-independent.
+            base = prev.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            if base in ("sensors", "sensors.exe"):
                 return i
     return -1
 
@@ -339,10 +344,96 @@ def _iter_ps_fallback() -> list[tuple[int, list[str]]]:
     return []
 
 
+def _iter_windows_processes() -> list[tuple[int, int, list[str]]]:
+    """Enumerate (pid, ppid, argv tokens) on Windows via PowerShell CIM (no /proc, no ps)."""
+    import shutil
+
+    ps_bin = shutil.which("powershell")
+    if not ps_bin:
+        return []
+    # [Console]::OutputEncoding: without a console (CREATE_NO_WINDOW) PowerShell
+    # falls back to the legacy ANSI codepage (GBK etc.), which the UTF-8 decode
+    # below cannot read when any process has non-ASCII argv.
+    command = (
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId, ParentProcessId, CommandLine | "
+        "ConvertTo-Json -Compress"
+    )
+    try:
+        out = subprocess.check_output(  # noqa: S603 -- argv is shutil.which("powershell") + literal flags
+            [ps_bin, "-NoProfile", "-NonInteractive", "-Command", command],
+            text=True,
+            timeout=30,
+            stderr=subprocess.DEVNULL,
+            creationflags=NO_WINDOW,
+            errors="replace",
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return []
+    return _windows_rows_from_json(out)
+
+
+def _windows_cmdline_tokens(cmdline: str) -> list[str]:
+    """Split a Windows command line into argv tokens.
+
+    POSIX shlex would eat backslashes in paths like ``C:\\Users\\...``, so split
+    with quoting disabled and strip the surrounding double quotes it keeps.
+    """
+    try:
+        tokens = shlex.split(cmdline, posix=False)
+    except ValueError:
+        return []
+    return [t[1:-1] if len(t) >= 2 and t.startswith('"') and t.endswith('"') else t for t in tokens]
+
+
+def _windows_rows_from_json(out: str) -> list[tuple[int, int, list[str]]]:
+    """Parse ConvertTo-Json output of ProcessId/ParentProcessId/CommandLine into rows."""
+    stripped = out.strip()
+    if not stripped:
+        return []
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return []
+    entries = payload if isinstance(payload, list) else [payload]
+    rows: list[tuple[int, int, list[str]]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        pid = entry.get("ProcessId")
+        cmdline = entry.get("CommandLine")
+        ppid = entry.get("ParentProcessId")
+        if not isinstance(pid, int) or not isinstance(cmdline, str) or not cmdline:
+            continue
+        tokens = _windows_cmdline_tokens(cmdline)
+        if tokens:
+            rows.append((pid, ppid if isinstance(ppid, int) else -1, tokens))
+    return rows
+
+
+def _windows_sensors_rows() -> list[tuple[int, list[str]]]:
+    """Windows: (pid, tokens) of sensors-start processes, uv trampolines collapsed.
+
+    uv-managed venvs on Windows launch python through a trampoline process that
+    re-execs the base interpreter with the same argv, so one worker shows up as
+    two processes (trampoline + real worker). The real worker is the child; it
+    owns the PID recorded in control.json, so the parent row is dropped.
+    """
+    rows = _iter_windows_processes()
+    matched_pids = {pid for pid, _ppid, tokens in rows if try_parse_sensors_start(tokens) is not None}
+    parents_of_matched = {ppid for pid, ppid, tokens in rows if pid in matched_pids and ppid in matched_pids}
+    return [
+        (pid, tokens)
+        for pid, ppid, tokens in rows
+        if pid in matched_pids and pid not in parents_of_matched
+    ]
+
+
 def list_sensors_start_pids() -> set[int]:
     """Fast: return PIDs of processes whose argv matches ``sensors start`` (no lsof, no disk I/O)."""
     if sys.platform == "win32":
-        return set()
+        return {pid for pid, _tokens in _windows_sensors_rows()}
     raw_rows = _iter_proc_cmdline_linux() or _iter_ps_fallback()
     return {pid for pid, tokens in raw_rows if try_parse_sensors_start(tokens) is not None}
 
@@ -350,12 +441,11 @@ def list_sensors_start_pids() -> set[int]:
 def list_sensors_start_processes() -> list[SensorsProcessInfo]:
     """Return all processes that look like an active sensors ``start`` (worker or show)."""
     if sys.platform == "win32":
-        return []
-
-    raw_rows: list[tuple[int, list[str]]]
-    raw_rows = _iter_proc_cmdline_linux()
-    if not raw_rows:
-        raw_rows = _iter_ps_fallback()
+        raw_rows = _windows_sensors_rows()
+    else:
+        raw_rows = _iter_proc_cmdline_linux()
+        if not raw_rows:
+            raw_rows = _iter_ps_fallback()
 
     result: list[SensorsProcessInfo] = []
     for pid, tokens in raw_rows:

@@ -65,6 +65,72 @@ def _write_minimal_project(project: Path) -> None:
     )
 
 
+def _write_disabled_project(project: Path) -> None:
+    """Project whose only runner is enabled: false (harness skeleton style)."""
+    sensors = project / ".sensors"
+    sensors.mkdir(parents=True)
+    cfg = sensors / "e2e.sensors.yaml"
+    py = sys.executable.replace("\\", "\\\\")
+    cfg.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "runners:",
+                "  - name: smoke",
+                "    parser: pytest",
+                "    enabled: false",
+                "    mode: interval",
+                "    interval: 200",
+                f"    command: {py} -c \"print('1 passed')\"",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_start_with_no_enabled_runners_is_noop_success() -> None:
+    """All-disabled config: start must not spawn a doomed worker (regression).
+
+    The worker used to write its control file and tear it down milliseconds
+    later, surfacing as "control file was not created in time" (exit 1).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp) / "proj"
+        project.mkdir()
+        _write_disabled_project(project)
+        cp = subprocess.run(
+            _sensors_cli() + ["start", str(project)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert cp.returncode == 0, cp.stderr
+        out = (cp.stdout or "") + (cp.stderr or "")
+        assert "no enabled runners" in out.lower()
+
+        cfg_path = resolve_config_path(str(project), None)
+        ctl = control_path_for_config(cfg_path)
+        assert not ctl.exists()
+        assert not (ctl.parent / "worker.log").exists()
+
+
+def test_check_with_no_enabled_runners_hints_at_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp) / "proj"
+        project.mkdir()
+        _write_disabled_project(project)
+        cp = subprocess.run(
+            _sensors_cli() + ["check", str(project)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert cp.returncode == 2
+        out = (cp.stdout or "") + (cp.stderr or "")
+        assert "no runners are enabled" in out.lower()
+
+
 def _wait_until(pred, timeout: float = 8.0, interval: float = 0.05) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -274,7 +340,6 @@ def test_status_requires_project_or_all() -> None:
     assert "required" in out.lower() or "--all" in out
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="`sensors status --all` is not supported on Windows")
 def test_status_all_smoke() -> None:
     st = subprocess.run(
         _sensors_cli() + ["status", "--all"],
@@ -334,7 +399,6 @@ def test_status_running_after_background_run(project_dir: Path) -> None:
     _wait_until(lambda: not ctl.exists(), timeout=10.0)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="`sensors status --all` is not supported on Windows")
 def test_status_all_lists_background_worker(project_dir: Path) -> None:
     cp = subprocess.run(
         _sensors_cli() + ["start", str(project_dir)],

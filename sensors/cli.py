@@ -26,7 +26,7 @@ from sensors.config.loader import (
     socket_path_for_config,
     state_path_for_config,
 )
-from sensors.config.schema import RunnerConfig, SensorsConfig
+from sensors.config.schema import RunnerConfig, RunnerMode, SensorsConfig
 from sensors.events import DisplayEvents
 from sensors.orchestration.control_server import (
     _endpoint_from_state,
@@ -37,6 +37,7 @@ from sensors.orchestration.control_server import (
     stop_running_sensors,
 )
 from sensors.orchestration.orchestrator import run_sensors
+from sensors.os_compat import NO_WINDOW
 from sensors.persistence.models import (
     HistoryEntry,
     HistoryRunnerEntry,
@@ -342,7 +343,14 @@ async def _load_check_context(
         state.runners = {k: v for k, v in state.runners.items() if k == runner}
 
     if not state.runners and not on_check_configs:
-        print("No runner state found. Is the sensors running?", file=sys.stderr)
+        if sensors_config is not None and not any(rc.enabled for rc in sensors_config.runners):
+            print(
+                "No runners are enabled in the sensors config. Enable at least one "
+                "runner (enabled: true), then run 'sensors start' to begin monitoring.",
+                file=sys.stderr,
+            )
+        else:
+            print("No runner state found. Is the sensors running?", file=sys.stderr)
         return None, 2
 
     return (
@@ -404,16 +412,32 @@ def _get_state_manager(working_dir: str, config: str | None = None) -> StateMana
     return _state_managers[key]
 
 
-def _wait_for_control_file(control_path: Path, timeout_sec: float = 5.0) -> bool:
+def _has_daemon_runners(config: SensorsConfig) -> bool:
+    """True if the config has at least one runner the background daemon would run.
+
+    on_check runners only execute inside `sensors check`, so they don't count.
+    """
+    return any(rc.enabled and rc.mode != RunnerMode.ON_CHECK for rc in config.runners)
+
+
+def _wait_for_control_file(
+    control_path: Path,
+    proc: subprocess.Popen,  # type: ignore[type-arg]
+    timeout_sec: float = 5.0,
+) -> bool:
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
         if control_path.exists():
             return True
+        if proc.poll() is not None:
+            return False
         time.sleep(0.05)
     return False
 
 
-def _spawn_background_worker(working_dir: str, config: str | None) -> None:
+def _spawn_background_worker(
+    working_dir: str, config: str | None, log_path: Path
+) -> subprocess.Popen:  # type: ignore[type-arg]
     # PyInstaller 打包后 sys.executable 是可执行文件本身(而非 python),
     # 直接重新调用即可;开发模式下仍走 `python -m sensors.cli`。
     if getattr(sys, "frozen", False):
@@ -423,29 +447,81 @@ def _spawn_background_worker(working_dir: str, config: str | None) -> None:
     if config:
         cmd.extend(["--config", config])
     cwd = str(Path(working_dir).resolve())
-    if os.name == "nt":
-        # start_new_session 在 Windows 上被静默忽略;用 creationflags 真正脱离
-        # 父控制台(否则关终端会连带杀掉 worker,Ctrl+C 也会传播)。
-        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
-            subprocess, "DETACHED_PROCESS", 0
+    # Worker output goes to a log file: stderr=DEVNULL would make every startup
+    # crash invisible (the old timeout message told users to check a discarded stream).
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(log_path, "ab")  # noqa: SIM115 -- parent closes its handle right after spawn; the child keeps its own
+    try:
+        if os.name == "nt":
+            # start_new_session 在 Windows 上被静默忽略;用 creationflags 真正脱离
+            # 父控制台(否则关终端会连带杀掉 worker,Ctrl+C 也会传播)。
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+                subprocess, "DETACHED_PROCESS", 0
+            )
+            proc = subprocess.Popen(  # noqa: S603 -- args are sys.executable + literals + user-provided working_dir; validated by caller
+                cmd,
+                cwd=cwd,
+                creationflags=creationflags,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=log_file,
+            )
+        else:
+            proc = subprocess.Popen(  # noqa: S603 -- args are sys.executable + literals + user-provided working_dir; validated by caller
+                cmd,
+                cwd=cwd,
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=log_file,
+            )
+    finally:
+        log_file.close()
+    return proc
+
+
+def _load_start_config(wd: str, config: str | None) -> Path | None:
+    """Resolve and validate the config for ``sensors start`` (non-worker path).
+
+    Returns the config path, or None when there is nothing to monitor — start
+    then returns success without spawning a worker. Raises typer.Exit(2) on
+    config errors.
+    """
+    try:
+        cfg_path = resolve_config_path(wd, config)
+        sensors_config = load_config_sync(wd, config)
+    except ConfigLoadError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=2) from None
+
+    if not _has_daemon_runners(sensors_config):
+        # Nothing for the daemon to do: a worker would write its control file and
+        # tear it down milliseconds later, surfacing as a bogus "control file was
+        # not created in time" error. Treat as a no-op success instead.
+        typer.echo(
+            f"Nothing to monitor: no enabled runners in {cfg_path.name}. "
+            "Enable at least one runner (enabled: true), then run sensors start again.",
+            err=True,
         )
-        subprocess.Popen(  # noqa: S603 -- args are sys.executable + literals + user-provided working_dir; validated by caller
-            cmd,
-            cwd=cwd,
-            creationflags=creationflags,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        return None
+    return cfg_path
+
+
+def _exit_worker_start_failure(proc: subprocess.Popen, worker_log: Path) -> None:  # type: ignore[type-arg]
+    """Report why the spawned worker never produced a control file, then exit 1."""
+    if proc.poll() is not None:
+        typer.echo(
+            f"The background sensors exited immediately (code {proc.returncode}). "
+            f"See {worker_log} for details.",
+            err=True,
         )
     else:
-        subprocess.Popen(  # noqa: S603 -- args are sys.executable + literals + user-provided working_dir; validated by caller
-            cmd,
-            cwd=cwd,
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        typer.echo(
+            "Sensors subprocess started but control file was not created in time. "
+            f"See {worker_log} for details.",
+            err=True,
         )
+    raise typer.Exit(code=1)
 
 
 @app.command("start")
@@ -481,11 +557,10 @@ def start_command(
             typer.echo(str(e), err=True)
             raise typer.Exit(code=1) from None
         return
-    try:
-        cfg_path = resolve_config_path(wd, config)
-    except ConfigLoadError as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=2) from None
+
+    cfg_path = _load_start_config(wd, config)
+    if cfg_path is None:
+        return
 
     ctl = control_path_for_config(cfg_path)
     sock = socket_path_for_config(cfg_path)
@@ -497,14 +572,10 @@ def start_command(
         typer.echo(str(e), err=True)
         raise typer.Exit(code=1) from None
 
-    _spawn_background_worker(wd, config)
-    if not _wait_for_control_file(ctl):
-        typer.echo(
-            "Sensors subprocess started but control file was not created in time. "
-            "Check stderr of the background process.",
-            err=True,
-        )
-        raise typer.Exit(code=1)
+    worker_log = ctl.parent / "worker.log"
+    proc = _spawn_background_worker(wd, config, worker_log)
+    if not _wait_for_control_file(ctl, proc):
+        _exit_worker_start_failure(proc, worker_log)
 
     if not show:
         return
@@ -555,7 +626,10 @@ def show_command(
     )
     display_box[0] = display
 
-    asyncio.run(display.run())
+    try:
+        asyncio.run(display.run())
+    except KeyboardInterrupt:
+        typer.echo("Viewer closed.")
 
 
 @app.command("snapshot")
@@ -586,10 +660,6 @@ def _status_all() -> None:
         list_sensors_start_processes,
         looks_like_macos_temp_sensors_dir,
     )
-
-    if sys.platform == "win32":
-        typer.echo("Listing all sensors processes is not supported on Windows.", err=True)
-        raise typer.Exit(2)
 
     rows = list_sensors_start_processes()
     if not rows:
@@ -626,7 +696,7 @@ def status_command(
         False,
         "--all",
         "-a",
-        help="List all sensors start processes on this machine (via /proc on Linux, else ps)",
+        help="List all sensors start processes on this machine (via /proc on Linux, ps on macOS, CIM on Windows)",
     ),
     config: str | None = typer.Option(None, "--config", "-c", help="Config file name within .sensors/"),
 ) -> None:
@@ -685,6 +755,7 @@ async def _run_on_check_command(runner_cfg: RunnerConfig) -> str:
             stderr=asyncio.subprocess.STDOUT,
             cwd=runner_cfg.workingDir,
             env=env,
+            creationflags=NO_WINDOW,
         )
         timeout_sec = runner_cfg.commandTimeout
         if timeout_sec is not None and timeout_sec > 0:
@@ -847,8 +918,21 @@ def _app_callback(
     """Sensors: continuous code quality monitoring for coding agents."""
 
 
+def _safe_stdio() -> None:
+    """Never crash on unencodable output (emoji icons on a GBK pipe/console)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def main() -> None:
     """Entry point for the sensors CLI."""
+    _safe_stdio()
     app()
 
 

@@ -336,6 +336,55 @@ async def test_handle_key_attach_mode_delegates_to_callbacks():
     assert display._should_stop
 
 
+@pytest.mark.asyncio
+async def test_q_still_closes_viewer_when_shutdown_rpc_fails():
+    """A failed shutdown RPC must not trap the user in the viewer (regression)."""
+    async def boom() -> None:
+        raise TimeoutError("rpc timeout")
+
+    display = DisplayManager(StateManager(), attach=True, on_shutdown=boom)
+    await display._handle_key("q")
+    assert display._should_stop
+    assert "rpc timeout" in (display._shutdown_error or "")
+
+
+@pytest.mark.asyncio
+async def test_run_loop_survives_action_key_exception():
+    """A key action that raises must surface as a status message, not crash the loop."""
+    sm = StateManager()
+
+    async def boom() -> None:
+        raise TimeoutError("rpc timeout")
+
+    with (
+        patch("sensors.tui.display.sys"),
+        patch("sensors.tui.display._raw_tty"),
+        patch("sensors.tui.display._console_attached", return_value=True),
+        patch("sensors.tui.display._check_keypress", return_value="s"),
+    ):
+        sm.read_state = AsyncMock(return_value=AsyncMock(runners={}, snapshot=None, queryLog=[]))
+        display = DisplayManager(sm, attach=True, on_snapshot=boom, update_interval=0.01)
+
+        async def stop_soon() -> None:
+            await asyncio.sleep(0.05)
+            display.stop()
+
+        await asyncio.wait_for(asyncio.gather(display.run(), stop_soon()), timeout=2.0)
+
+    assert "rpc timeout" in (display._action_error or "")
+    assert display._should_stop
+
+
+def test_drain_stdin_lines_takes_first_char_of_first_nonempty_line():
+    """Piped commands arrive as lines; the first char acts as the key."""
+    q: asyncio.Queue[str] = asyncio.Queue()
+    q.put_nowait("")
+    q.put_nowait("  q  ")
+    assert DisplayManager._drain_stdin_lines(q) == "q"
+    assert DisplayManager._drain_stdin_lines(q) is None
+    assert DisplayManager._drain_stdin_lines(None) is None
+
+
 def test_runner_row_cells_on_check():
     """on_check mode returns a static hint in the details cell."""
     display = DisplayManager(StateManager())
