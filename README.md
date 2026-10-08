@@ -29,6 +29,21 @@ The [Build Windows EXE](./.github/workflows/build-windows.yml) workflow uses a G
 
 Before uploading, the workflow verifies `--help`, `--version`, background startup, status, sensor results, and shutdown outside the checkout directory. This workflow runs independently of the existing PyPI publishing workflow.
 
+### Automatic Releases and the latest download
+
+Pushing a new `v*` version tag automatically creates a GitHub Release with generated release notes and a `sensors.exe` asset after the Windows build and smoke tests succeed. Publishing uses the workflow's built-in `GITHUB_TOKEN`; no additional secrets are required. Branch builds remain available through Actions artifacts.
+
+To publish a new version, first update the project version and commit the workflow and code, then create a matching new tag. For example, after preparing version `0.1.5`:
+
+```bash
+git tag v0.1.5
+git push origin v0.1.5
+```
+
+Stable download URL: [Download the latest stable sensors.exe](https://github.com/HelloGGX/sensors-cli/releases/latest/download/sensors.exe). This follows GitHub's [latest release asset URL format](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases) and becomes available once a stable release with the asset has been successfully published. [View all Releases](https://github.com/HelloGGX/sensors-cli/releases).
+
+Tags containing `-`, such as `v0.1.5-rc.1`, create prereleases and do not update the stable download URL. Rerunning the same tag fills in missing assets or finishes publishing a draft while preserving an existing `sensors.exe`.
+
 ## Commands
 
 (CLI needs to be installed via `uv tool install`, see `/_local-setup` skill)

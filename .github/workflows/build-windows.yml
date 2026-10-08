@@ -130,3 +130,67 @@ jobs:
           path: dist/sensors.exe
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    needs: build-windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: windows-release-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Download Windows executable
+        uses: actions/download-artifact@v4
+        with:
+          name: sensors-windows-x64
+          path: dist/
+
+      - name: Publish executable to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_BASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases
+        shell: bash
+        run: |
+          # Prerelease tags (for example v0.1.5-rc.1) do not change the stable download.
+          release_options=(--latest=false)
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            release_options+=(--prerelease)
+          fi
+
+          if release_json=$(gh release view "$RELEASE_TAG" --json isDraft,assets); then
+            # Preserve published assets, including immutable releases, on a rerun.
+            if [[ $(jq -r 'any(.assets[]; .name == "sensors.exe" and .size > 0)' <<< "$release_json") != true ]]; then
+              upload_options=()
+              if [[ $(jq -r '.isDraft' <<< "$release_json") == true ]]; then
+                # Failed uploads can leave an empty asset in an unpublished draft.
+                upload_options+=(--clobber)
+              fi
+              gh release upload "$RELEASE_TAG" dist/sensors.exe "${upload_options[@]}"
+            fi
+            # Recover a draft left by an interrupted release after its asset is uploaded.
+            if [[ $(jq -r '.isDraft' <<< "$release_json") == true ]]; then
+              gh release edit "$RELEASE_TAG" --draft=false "${release_options[@]}"
+            fi
+          else
+            gh release create "$RELEASE_TAG" dist/sensors.exe \
+              --verify-tag --generate-notes --title "$RELEASE_TAG" \
+              "${release_options[@]}"
+          fi
+
+          # Let GitHub select the latest stable version instead of promoting an old tag.
+          release_json=$(gh release view "$RELEASE_TAG" --json databaseId,isPrerelease)
+          if [[ $(jq -r '.isPrerelease' <<< "$release_json") == false ]]; then
+            release_id=$(jq -r '.databaseId' <<< "$release_json")
+            gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
+              -f make_latest=legacy > /dev/null
+          fi
+
+          printf 'Release: %s/tag/%s\n' "$RELEASE_BASE_URL" "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Latest stable Windows exe: %s/latest/download/sensors.exe\n' "$RELEASE_BASE_URL" >> "$GITHUB_STEP_SUMMARY"

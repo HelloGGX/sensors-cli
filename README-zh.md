@@ -29,6 +29,21 @@
 
 工作流会在打包后、上传前，从仓库目录之外验证 `--help`、`--version`、后台服务启动、状态查询、读取传感器结果和停止服务。这个工作流独立于现有 PyPI 发布流程。
 
+### 自动发布 Release 和下载最新版本
+
+推送新的 `v*` 版本标签后，工作流会在 Windows 构建及冒烟测试成功后自动创建 GitHub Release、生成发布说明，并附加 `sensors.exe`。发布使用工作流自带的 `GITHUB_TOKEN`，无需配置额外密钥。普通分支构建仍可从 Actions 的 Artifacts 下载。
+
+发布新版本时，先更新项目版本并提交工作流及代码，再创建对应的新标签。例如，准备好 `0.1.5` 版本后：
+
+```bash
+git tag v0.1.5
+git push origin v0.1.5
+```
+
+固定下载地址：[下载最新正式版 sensors.exe](https://github.com/HelloGGX/sensors-cli/releases/latest/download/sensors.exe)。该地址遵循 GitHub 的[最新 Release 附件链接格式](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases)，首次成功发布正式版及其附件后可用。[查看所有 Release](https://github.com/HelloGGX/sensors-cli/releases)。
+
+`v0.1.5-rc.1` 等带 `-` 的标签会发布为预发布版，不更新正式版下载地址。重跑同一标签时会补齐缺失的附件或完成草稿发布，保留已有的 `sensors.exe`。
+
 ## 命令
 
 （CLI 需要通过 `uv tool install` 安装，参见 `/_local-setup` 技能）
