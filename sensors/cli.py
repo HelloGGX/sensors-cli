@@ -440,8 +440,12 @@ def _spawn_background_worker(
 ) -> subprocess.Popen:  # type: ignore[type-arg]
     # PyInstaller 打包后 sys.executable 是可执行文件本身(而非 python),
     # 直接重新调用即可;开发模式下仍走 `python -m sensors.cli`。
+    worker_env: dict[str, str] | None = None
     if getattr(sys, "frozen", False):
         cmd = [sys.executable, "start", "--worker", str(Path(working_dir).resolve())]
+        # The daemon outlives this CLI. Give it its own extracted bundle so
+        # PyInstaller does not remove shared resources when this process exits.
+        worker_env = {**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"}
     else:
         cmd = [sys.executable, "-m", "sensors.cli", "start", "--worker", str(Path(working_dir).resolve())]
     if config:
@@ -461,6 +465,7 @@ def _spawn_background_worker(
             proc = subprocess.Popen(  # noqa: S603 -- args are sys.executable + literals + user-provided working_dir; validated by caller
                 cmd,
                 cwd=cwd,
+                env=worker_env,
                 creationflags=creationflags,
                 stdin=subprocess.DEVNULL,
                 stdout=log_file,
@@ -470,6 +475,7 @@ def _spawn_background_worker(
             proc = subprocess.Popen(  # noqa: S603 -- args are sys.executable + literals + user-provided working_dir; validated by caller
                 cmd,
                 cwd=cwd,
+                env=worker_env,
                 start_new_session=True,
                 stdin=subprocess.DEVNULL,
                 stdout=log_file,

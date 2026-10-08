@@ -12,6 +12,23 @@
 
 这个工具基本上是“即兴编码”（Vibe Coding）完成的，不过我也用 AI 做了定期重构，并且在这个代码库上使用 CLI 运行传感器（“吃自己的狗粮”）。查看 [`.sensors/sensors-cli.sensors.yaml`](./.sensors/sensors-cli.sensors.yaml) 了解此处使用的传感器。并查看 [docs/reports/2026-06-15_modularity-review.md](./docs/reports/2026-06-15_modularity-review.md)，了解类似这种快速传感器为何有助于可维护性，但在我们没有花足够时间关注整体代码结构时，它们的作用也仅此而已……
 
+## 在 GitHub 上构建 Windows exe
+
+工作流 [Build Windows EXE](./.github/workflows/build-windows.yml) 使用 GitHub 托管的 `windows-2022` x64 机器、Python 3.12 x64 和 PyInstaller，生成单文件 `sensors.exe`。运行这个 exe 无需安装 Python；传感器配置中调用的外部工具仍需自行安装。
+
+1. 将代码及工作流提交并推送到 GitHub 的 `main` 或 `window` 分支；修改 `sensors/`、`pyproject.toml`、`uv.lock` 或此工作流时会自动构建。推送 `v*` 标签也会触发构建。
+2. 如需手动构建，先确保默认分支包含此工作流，然后进入仓库的 **Actions → Build Windows EXE → Run workflow**，选择分支并运行。
+3. 构建成功后，打开本次运行页面，在 **Artifacts** 中下载 `sensors-windows-x64`，解压得到 `sensors.exe`。构建产物保留 30 天。
+4. 在 Windows PowerShell 中运行：
+
+```powershell
+.\sensors.exe --help
+.\sensors.exe --version
+.\sensors.exe check C:\path\to\project
+```
+
+工作流会在打包后、上传前，从仓库目录之外验证 `--help`、`--version`、后台服务启动、状态查询、读取传感器结果和停止服务。这个工作流独立于现有 PyPI 发布流程。
+
 ## 命令
 
 （CLI 需要通过 `uv tool install` 安装，参见 `/_local-setup` 技能）

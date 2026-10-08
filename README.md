@@ -12,6 +12,23 @@ Use `/_local-setup` skill to set it up on your machine (or use the `SKILL.md` fi
 
 This tool was more or less vibe coded, though I did do regular refactorings with AI, and used the CLI to run sensors for this codebase ("eating my own dog food"). Check out [`.sensors/sensors-cli.sensors.yaml`](./.sensors/sensors-cli.sensors.yaml) to see the sensors used here. And look at [2026-06-15_modularity-review.md](./docs/reports/2026-06-15_modularity-review.md) for examples of why quick sensors like this can help with maintainability, but can only go so far when we don't spend much time on the larger code structure...
 
+## Build a Windows executable on GitHub
+
+The [Build Windows EXE](./.github/workflows/build-windows.yml) workflow uses a GitHub-hosted `windows-2022` x64 runner, Python 3.12 x64, and PyInstaller to produce a single-file `sensors.exe`. Running it does not require Python; external tools referenced by your sensor configuration must still be installed separately.
+
+1. Commit and push the code and workflow to the `main` or `window` branch. Changes to `sensors/`, `pyproject.toml`, `uv.lock`, or this workflow trigger a build automatically. Pushing a `v*` tag also triggers a build.
+2. To build manually, first ensure the default branch contains this workflow, then open **Actions → Build Windows EXE → Run workflow**, select a branch, and run it.
+3. After a successful run, download `sensors-windows-x64` from **Artifacts** on the run page and unzip it to get `sensors.exe`. Artifacts are retained for 30 days.
+4. Run it in Windows PowerShell:
+
+```powershell
+.\sensors.exe --help
+.\sensors.exe --version
+.\sensors.exe check C:\path\to\project
+```
+
+Before uploading, the workflow verifies `--help`, `--version`, background startup, status, sensor results, and shutdown outside the checkout directory. This workflow runs independently of the existing PyPI publishing workflow.
+
 ## Commands
 
 (CLI needs to be installed via `uv tool install`, see `/_local-setup` skill)

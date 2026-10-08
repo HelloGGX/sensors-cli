@@ -1,0 +1,132 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, window]
+    tags: ["v*"]
+    paths:
+      - "sensors/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/build-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Windows x64 executable
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Python x64
+        id: python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: x64
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        env:
+          UV_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: uv sync --locked --dev
+
+      - name: Verify Windows x64 Python
+        run: >-
+          uv run --no-sync python -c
+          "import platform, struct; assert platform.system() == 'Windows'; assert platform.machine() == 'AMD64'; assert struct.calcsize('P') == 8; print(platform.python_version(), platform.machine())"
+
+      - name: Build sensors.exe
+        env:
+          PYINSTALLER_CONFIG_DIR: ${{ runner.temp }}/pyinstaller
+        run: |
+          uv run --no-sync pyinstaller `
+            --onefile `
+            --name sensors `
+            --collect-all sensors `
+            --collect-all pydantic `
+            --collect-all pydantic_core `
+            --noupx `
+            --clean `
+            --noconfirm `
+            --specpath build `
+            sensors/cli.py
+
+      - name: Smoke test the executable outside the checkout
+        run: |
+          $exe = (Resolve-Path "dist/sensors.exe").Path
+          $project = Join-Path $env:RUNNER_TEMP "sensors-exe-smoke"
+          $sensorsDir = Join-Path $project ".sensors"
+          New-Item -ItemType Directory -Path $sensorsDir -Force | Out-Null
+          @'
+          version: 1
+          runners:
+            - name: smoke
+              parser: default
+              mode: interval
+              interval: 60000
+              command: 'echo {"success": true, "summary": "Windows executable smoke test"}'
+          '@ | Set-Content -Path (Join-Path $sensorsDir "smoke.sensors.yaml") -Encoding utf8
+
+          Push-Location $project
+          try {
+            & $exe --help
+            if ($LASTEXITCODE -ne 0) { throw "sensors.exe --help failed" }
+            & $exe --version
+            if ($LASTEXITCODE -ne 0) { throw "sensors.exe --version failed" }
+            & $exe start .
+            if ($LASTEXITCODE -ne 0) { throw "sensors.exe start failed" }
+
+            $statePath = Join-Path $sensorsDir "smoke.state.json"
+            $deadline = (Get-Date).AddSeconds(30)
+            $ready = $false
+            while ((Get-Date) -lt $deadline) {
+              if (Test-Path $statePath) {
+                try {
+                  $state = Get-Content -Raw $statePath | ConvertFrom-Json
+                  $ready = $state.runners.smoke.status -eq "success"
+                } catch { $ready = $false }
+                if ($ready) { break }
+              }
+              Start-Sleep -Milliseconds 250
+            }
+            if (-not $ready) { throw "The executable did not persist a successful parser result" }
+
+            & $exe status .
+            if ($LASTEXITCODE -ne 0) { throw "sensors.exe status failed" }
+            $check = & $exe check .
+            $checkExit = $LASTEXITCODE
+            $check | Write-Output
+            if ($checkExit -ne 0 -or ($check -join "`n") -notmatch "Windows executable smoke test") {
+              throw "sensors.exe check did not report the parser result"
+            }
+          } catch {
+            $log = Join-Path $sensorsDir "worker.log"
+            if (Test-Path $log) { Get-Content $log }
+            throw
+          } finally {
+            try {
+              & $exe stop . --timeout 30
+              if ($LASTEXITCODE -ne 0) { throw "sensors.exe stop failed" }
+            } finally { Pop-Location }
+          }
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: sensors-windows-x64
+          path: dist/sensors.exe
+          if-no-files-found: error
+          retention-days: 30

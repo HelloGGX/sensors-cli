@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
-from sensors.cli import _has_daemon_runners, _wait_for_control_file
+import pytest
+
+from sensors import cli
+from sensors.cli import _has_daemon_runners, _spawn_background_worker, _wait_for_control_file
 from sensors.config.schema import RunnerConfig, RunnerMode, SensorsConfig
 
 
@@ -73,3 +78,40 @@ def test_wait_for_control_file_fails_fast_when_child_exits(tmp_path: Path) -> No
 
 def test_wait_for_control_file_times_out_when_child_alive(tmp_path: Path) -> None:
     assert _wait_for_control_file(tmp_path / "missing.json", _AliveProc(), timeout_sec=0.2) is False
+
+
+@pytest.mark.parametrize("os_name", ["posix", "nt"])
+@pytest.mark.parametrize("frozen", [False, True])
+def test_background_worker_owns_frozen_bundle_without_changing_parent_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, os_name: str, frozen: bool
+) -> None:
+    environment = {"PATH": "existing-path", "PYINSTALLER_RESET_ENVIRONMENT": "0"}
+    monkeypatch.setattr(cli, "os", SimpleNamespace(name=os_name, environ=environment))
+    monkeypatch.setattr(cli.sys, "frozen", frozen, raising=False)
+    popen = Mock()
+    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+
+    process = _spawn_background_worker(
+        str(tmp_path), "smoke.sensors.yaml", tmp_path / ".sensors" / "worker.log"
+    )
+
+    assert process is popen.return_value
+    popen.assert_called_once()
+    child_environment = popen.call_args.kwargs.get("env")
+    if frozen:
+        # A daemon must unpack its own bundle: the launching CLI exits and
+        # PyInstaller then removes that CLI's temporary extracted resources.
+        assert child_environment == {"PATH": "existing-path", "PYINSTALLER_RESET_ENVIRONMENT": "1"}
+        assert child_environment is not environment
+        assert popen.call_args.args[0] == [
+            cli.sys.executable,
+            "start",
+            "--worker",
+            str(tmp_path),
+            "--config",
+            "smoke.sensors.yaml",
+        ]
+    else:
+        assert child_environment is None
+        assert popen.call_args.args[0][:3] == [cli.sys.executable, "-m", "sensors.cli"]
+    assert environment == {"PATH": "existing-path", "PYINSTALLER_RESET_ENVIRONMENT": "0"}
